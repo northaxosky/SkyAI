@@ -10,9 +10,17 @@ If you came here to evaluate this project, start with the journal. The code show
 
 ## Structure
 
-One markdown per module, numbered by build order:
+One markdown per module, numbered by build order. Entries prefixed `00-prereq-*` cover the foundations I built up *before* SkyAI proper — Karpathy's Zero to Hero series, watched in order, journaled as I went:
 
 ```
+00-prereq-micrograd.md
+00-prereq-makemore-bigram.md
+00-prereq-makemore-mlp.md
+00-prereq-makemore-activations.md
+00-prereq-makemore-backprop-ninja.md
+00-prereq-makemore-wavenet.md
+00-prereq-lets-build-gpt.md
+00-prereq-gpt-tokenizer.md
 01-tokenizer.md
 02-attention.md
 03-transformer-block.md
@@ -25,7 +33,7 @@ One markdown per module, numbered by build order:
 10-evaluation.md
 ```
 
-(Numbering is approximate — it'll shift as the work unfolds.)
+(Numbering is approximate — it'll shift as the work unfolds. Prereq entries are intentionally short — capture-the-reaction quick notes, not polished essays.)
 
 ## What's in each entry
 
