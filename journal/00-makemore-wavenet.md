@@ -89,8 +89,6 @@ A: Wavenet is *one* non-transformer architecture, not "the" best. The landscape:
 
 For name generation specifically, **transformers are overkill**. WaveNet is actually a great fit because the task has fixed-length context and local dependencies. Transformers shine when long-range dependencies matter (essays, code).
 
-The reason SkyAI uses transformers anyway: that's where the masters-application story is. "I built a model that's structurally identical to GPT-2 and ChatGPT" is the framing that lands. WaveNet for names wouldn't have the same narrative weight.
-
 **Q: What is the "experimental harness" Karpathy mentions?**
 
 A: It's the surrounding infrastructure that lets you run many experiments efficiently, compare them, and not lose your mind. Components:
