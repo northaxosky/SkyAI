@@ -16,8 +16,7 @@ A scalar autograd engine from scratch (the `Value` class), plus a tiny multi-lay
 
 - I initially thought Neural Nets would store data as actual nodes with connections/edges. clearly not the case.
 - Every time I work with python I am reminded why I love statically typed languages like C++
-
-*(EXPAND: there are at least two real "oh, THAT'S why" moments worth capturing. (1) The `Layer.__call__` returning a 1-element list when you expected a bare Value. (2) `sum()` starting at int 0 and needing `__radd__` on Value. Pick one or both and write a sentence on the moment of realization.)*
+- The radd & add (and every other right and left operation) was suprising
 
 ## What I should be doing differently
 
