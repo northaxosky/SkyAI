@@ -1,0 +1,24 @@
+{
+  "include": ["src", "tests"],
+  "exclude": [
+    "**/__pycache__",
+    "**/.ipynb_checkpoints",
+    ".venv",
+    "data",
+    "checkpoints",
+    "runs",
+    "wandb",
+    "logs",
+    "notebooks"
+  ],
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  // "reportMissingTypeStubs": false,
+  // "reportPrivateImportUsage": false,
+  // "reportUnknownMemberType": false,
+  // "reportUnknownVariableType": false,
+  // "reportUnknownArgumentType": false,
+  // "reportUnknownLambdaType": false
+}
