@@ -457,6 +457,7 @@ log_file = os.path.join(log_dir, "log.txt")
 RESUME = True
 start_step = 0
 val_loss_accum: torch.Tensor | float | None = None
+wandb_run_id: str | None = None
 
 if RESUME:
     candidates = sorted(Path(checkpoint_dir).glob("model_*.pt"))
@@ -497,8 +498,6 @@ if RESUME:
         wandb_run_id = ckpt.get("wandb_run_id")
         if master_process:
             print(f"Resumed at step {start_step}, val_loss={val_loss_accum}")
-else:
-    wandb_run_id = None
 
 # Truncate log only on fresh start; append on resume to preserve history
 log_mode = "a" if start_step > 0 else "w"
@@ -616,7 +615,7 @@ for step in range(start_step, max_steps):
             # Forward the model to get the logits
             with torch.no_grad():
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                    logits = raw_model(x)  # pyright: ignore
+                    logits, _ = raw_model(x)  # pyright: ignore
 
                 # Take the logits at the last position & get the probabilities
                 logits = logits[:, -1, :]
