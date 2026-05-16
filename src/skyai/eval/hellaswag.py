@@ -24,8 +24,8 @@ DATA_CACHE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" /
 
 HELLASWAG_URLS = {
     "train": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_train.jsonl",
-    "val":   "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl",
-    "test":  "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl",
+    "val": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl",
+    "test": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl",
 }
 
 enc = tiktoken.get_encoding("gpt2")
@@ -34,13 +34,16 @@ enc = tiktoken.get_encoding("gpt2")
 def download_file(url: str, fname: Path, chunk_size: int = 1024) -> None:
     resp = requests.get(url, stream=True)
     total = int(resp.headers.get("content-length", 0))
-    with open(fname, "wb") as f, tqdm(
-        desc=str(fname),
-        total=total,
-        unit="iB",
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as bar:
+    with (
+        open(fname, "wb") as f,
+        tqdm(
+            desc=str(fname),
+            total=total,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar,
+    ):
         for data in resp.iter_content(chunk_size=chunk_size):
             size = f.write(data)
             bar.update(size)
@@ -54,7 +57,9 @@ def download(split: str) -> None:
         download_file(HELLASWAG_URLS[split], data_filename)
 
 
-def render_example(example: dict[str, Any]) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, int]:
+def render_example(
+    example: dict[str, Any],
+) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, int]:
     """
     Render a HellaSwag example as three tensors:
     - tokens: (4, N) token ids for context + each candidate completion

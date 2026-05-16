@@ -90,12 +90,14 @@ def main() -> None:
         token_count = 0
         progress: tqdm | None = None
 
-        for tokens in pool.imap(tokenize, fw, chunksize=16): # pyright: ignore
+        for tokens in pool.imap(tokenize, fw, chunksize=16):  # pyright: ignore
             if token_count + len(tokens) < args.shard_size:
                 buffer[token_count : token_count + len(tokens)] = tokens
                 token_count += len(tokens)
                 if progress is None:
-                    progress = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}")
+                    progress = tqdm(
+                        total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}"
+                    )
                 progress.update(len(tokens))
                 continue
 

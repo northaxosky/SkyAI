@@ -28,7 +28,7 @@ from skyai.eval.hellaswag import compute_completion_losses, iterate_examples, re
 def evaluate(model_type: str, device: str) -> None:
     torch.set_float32_matmul_precision("high")
     model = GPT2LMHeadModel.from_pretrained(model_type)
-    model.to(device) # pyright: ignore
+    model.to(device)  # pyright: ignore
 
     num_correct_norm = 0
     num_correct = 0
@@ -46,8 +46,8 @@ def evaluate(model_type: str, device: str) -> None:
         num_correct += int(pred == label)
         num_correct_norm += int(pred_norm == label)
         print(
-            f"{num_total} acc: {num_correct}/{num_total}={num_correct/num_total:.4f} "
-            f"acc_norm: {num_correct_norm}/{num_total}={num_correct_norm/num_total:.4f}"
+            f"{num_total} acc: {num_correct}/{num_total}={num_correct / num_total:.4f} "
+            f"acc_norm: {num_correct_norm}/{num_total}={num_correct_norm / num_total:.4f}"
         )
 
         if num_total <= 10:
@@ -60,9 +60,15 @@ def evaluate(model_type: str, device: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate a HuggingFace GPT-2 against HellaSwag val.")
-    parser.add_argument("-m", "--model_type", type=str, default="gpt2", help="HF model identifier (default: gpt2)")
-    parser.add_argument("-d", "--device", type=str, default="cuda", help="torch device (default: cuda)")
+    parser = argparse.ArgumentParser(
+        description="Evaluate a HuggingFace GPT-2 against HellaSwag val."
+    )
+    parser.add_argument(
+        "-m", "--model_type", type=str, default="gpt2", help="HF model identifier (default: gpt2)"
+    )
+    parser.add_argument(
+        "-d", "--device", type=str, default="cuda", help="torch device (default: cuda)"
+    )
     args = parser.parse_args()
     evaluate(args.model_type, args.device)
 
