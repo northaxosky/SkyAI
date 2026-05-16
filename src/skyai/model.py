@@ -633,7 +633,7 @@ for step in range(start_step, max_steps):
 
                 # do top-k sampling of 50 & select a token
                 topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-                ix = torch.multinomial(topk_probs, 1)
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
 
                 # Gather the corresponding indices & append to the sequence
                 xcol = torch.gather(topk_indices, -1, ix)
@@ -690,7 +690,7 @@ for step in range(start_step, max_steps):
     tokens_sec = tokens_processed / (dt / 1000)
     if master_process:
         print(
-            f"Step {step + 1} | LR: {lr:.4e} | Loss: {loss_accum:.6f} | Norm: {norm:.4f} | dT: {dt:.2f}ms | Tok/sec: {tokens_sec:.2f}"
+            f"Step {step} | LR: {lr:.4e} | Loss: {loss_accum:.6f} | Norm: {norm:.4f} | dT: {dt:.2f}ms | Tok/sec: {tokens_sec:.2f}"
         )
         with open(log_file, "a") as file:
             file.write(f"Step: {step}, Training Loss: {loss_accum:.6f}\n")
