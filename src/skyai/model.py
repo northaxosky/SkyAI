@@ -424,9 +424,16 @@ torch.set_float32_matmul_precision("high")
 model = GPT(GPTConfig(vocab_size=50304))
 # model = GPT.from_pretrained('gpt2-xl')
 model.to(device)
-if sys.platform == "linux":
+
+# torch.compile can introduce subtle BF16 numerical drift vs eager mode.
+# Karpathy's reference disables it by default. Set SKYAI_COMPILE=1 to enable.
+use_compile = sys.platform == "linux" and os.environ.get("SKYAI_COMPILE", "0") == "1"
+if use_compile:
     model = torch.compile(model)
-    print("Using torch-compiled GPT")
+    if master_process:
+        print("Using torch-compiled GPT")
+elif master_process:
+    print("Running uncompiled (eager mode)")
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 # raw_model unwraps both DDP and torch.compile so we can call methods like
@@ -663,6 +670,12 @@ for step in range(start_step, max_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
 
+        # require_backward_grad_sync is read by BOTH forward and backward DDP hooks,
+        # so it must be set BEFORE the forward pass, not just before backward.
+        # See karpathy/build-nanogpt README errata for the original bug.
+        if ddp:
+            model.require_backward_grad_sync = micro_step == grad_accum_steps - 1  # pyright: ignore
+
         # Use bfloat16 for optimal speed/precision
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
@@ -670,8 +683,6 @@ for step in range(start_step, max_steps):
         # Scale the loss to account for gradient accumulation
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
-        if ddp:
-            model.require_backward_grad_sync = micro_step == grad_accum_steps - 1  # pyright: ignore
         loss.backward()
 
     if ddp:
