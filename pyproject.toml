@@ -16,6 +16,7 @@ dependencies = [
     "datasets>=2.16",
     "regex>=2026.4.4",
     "ipywidgets>=8.1.8",
+    "requests>=2.33.1",
 ]
 
 [dependency-groups]
