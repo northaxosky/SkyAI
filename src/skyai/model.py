@@ -14,12 +14,12 @@ import tiktoken
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import wandb
 from dotenv import load_dotenv
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+import wandb
 from skyai.eval.hellaswag import get_most_likely_row, iterate_examples, render_example
 
 # Load .env from repo root (regardless of cwd)
@@ -288,6 +288,10 @@ class GPT(nn.Module):
 # ============================================
 def load_tokens(filename):
     npt = np.load(filename)
+    # Defensive cast: shard .npy files are written as uint16, but be explicit
+    # about the int32 intermediate before going to torch.long. Karpathy added
+    # this post-video to avoid edge cases with unexpected source dtypes.
+    npt = npt.astype(np.int32)
     ptt = torch.tensor(npt, dtype=torch.long)
     return ptt
 
@@ -313,10 +317,12 @@ class DataLoaderLite:
         self.reset()
 
     def reset(self):
-        # State, init at shard zero
+        # State, init at shard zero. Position must be per-rank offset, not
+        # num_processes - otherwise all DDP ranks read the same data and you lose
+        # all data parallelism (silently, gradients still sync).
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = self.B * self.T * self.num_processes
+        self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
         B, T = self.B, self.T
@@ -380,6 +386,10 @@ else:
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
     print(f"Non-DDP using device: {device}")
+
+# torch.autocast wants device_type ("cuda" / "cpu" / "mps"), not a full device
+# string like "cuda:0". PyTorch is strict about this distinction.
+device_type = "cuda" if device.startswith("cuda") else device
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
@@ -513,7 +523,7 @@ if master_process:
         project="skyai",
         id=wandb_run_id,
         resume="allow",
-        config=asdict(raw_model.config) # pyright: ignore
+        config=asdict(raw_model.config)  # pyright: ignore
         | {  # pyright: ignore
             "max_steps": max_steps,
             "max_lr": max_lr,
@@ -545,7 +555,7 @@ for step in range(start_step, max_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
 
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -555,7 +565,7 @@ for step in range(start_step, max_steps):
             print(f"Validation Loss: {val_loss_accum:.4f}")
             with open(log_file, "a") as file:
                 file.write(f"Step: {step}, Validation Loss: {val_loss_accum:.4f}\n")
-            wandb.log({"val/loss": float(val_loss_accum)}, step=step) # pyright: ignore
+            wandb.log({"val/loss": float(val_loss_accum)}, step=step)  # pyright: ignore
 
     # Evaluate hellaswag
     if step % 250 == 0 or last_step:
@@ -574,7 +584,7 @@ for step in range(start_step, max_steps):
 
             # Get the logits (raw_model: avoid torch.compile recompile per varying example length)
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = raw_model(tokens)  # pyright: ignore
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
@@ -614,7 +624,7 @@ for step in range(start_step, max_steps):
         while x.size(1) < max_length:
             # Forward the model to get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, _ = raw_model(x)  # pyright: ignore
 
                 # Take the logits at the last position & get the probabilities
@@ -651,7 +661,7 @@ for step in range(start_step, max_steps):
         x, y = x.to(device), y.to(device)
 
         # Use bfloat16 for optimal speed/precision
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
 
         # Scale the loss to account for gradient accumulation
