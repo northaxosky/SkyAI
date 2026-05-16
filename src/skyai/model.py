@@ -203,7 +203,9 @@ class GPT(nn.Module):
         assert model_type in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
         from transformers import GPT2LMHeadModel
 
-        print(f"Loading weights from pre-trained GPT: {model_type}")
+        # Rank 0 or non-DDP: print once. In DDP, suppress noise from other ranks.
+        if os.environ.get("RANK", "0") == "0":
+            print(f"Loading weights from pre-trained GPT: {model_type}")
 
         # n_layer, n_head, n_embed are determined from model type
         config_args = {
@@ -269,12 +271,13 @@ class GPT(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(
-            f"# Decayed Parameters Tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
-        )
-        print(
-            f"# Non-Decayed Parameter Tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
-        )
+        if os.environ.get("RANK", "0") == "0":
+            print(
+                f"# Decayed Parameters Tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+            )
+            print(
+                f"# Non-Decayed Parameter Tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+            )
 
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
