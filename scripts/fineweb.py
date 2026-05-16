@@ -19,7 +19,11 @@ from pathlib import Path
 import numpy as np
 import tiktoken
 from datasets import load_dataset
+from dotenv import load_dotenv
 from tqdm import tqdm
+
+# Load .env from repo root (regardless of cwd)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Worker-side state. mp.Pool on Windows uses spawn, which re-imports this
 # module in each worker, so module-level init runs per-worker. That's what

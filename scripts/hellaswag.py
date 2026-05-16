@@ -17,11 +17,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import torch
+from dotenv import load_dotenv
 from transformers import GPT2LMHeadModel
 
 from skyai.eval.hellaswag import compute_completion_losses, iterate_examples, render_example
+
+# Load .env from repo root (regardless of cwd)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 @torch.no_grad()

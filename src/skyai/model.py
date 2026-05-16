@@ -5,7 +5,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
@@ -14,11 +14,16 @@ import tiktoken
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import wandb
+from dotenv import load_dotenv
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from skyai.eval.hellaswag import get_most_likely_row, iterate_examples, render_example
+
+# Load .env from repo root (regardless of cwd)
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 # ===============================
 
@@ -331,6 +336,19 @@ class DataLoaderLite:
             self.current_position = B * T * self.process_rank
         return x, y
 
+    def state_dict(self) -> dict:
+        return {"current_shard": self.current_shard, "current_position": self.current_position}
+
+    def load_state_dict(self, state: dict) -> None:
+        # Only the saving rank's position is exact; other ranks restart at their
+        # rank-offset within the same shard. Costs at most one microbatch of skew.
+        self.current_shard = state["current_shard"]
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        if self.process_rank == 0:
+            self.current_position = state["current_position"]
+        else:
+            self.current_position = self.B * self.T * self.process_rank
+
 
 # ============================================
 # Set up distributed data parallel
@@ -428,14 +446,90 @@ def get_lr(it):
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)  # pyright: ignore
 enc = tiktoken.get_encoding("gpt2")
 
-# Create a log directory where we can write checkpoints & logs
+# Logs and checkpoints (separate directories; logs is small text, checkpoints is large binaries)
 log_dir = "logs"
+checkpoint_dir = "checkpoints"
 os.makedirs(log_dir, exist_ok=True)
+os.makedirs(checkpoint_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "log.txt")
-with open(log_file, "w") as file:
-    pass
 
-for step in range(max_steps):
+# Resume from latest checkpoint if any. Auto-detect; flip RESUME=False to force fresh start.
+RESUME = True
+start_step = 0
+val_loss_accum: torch.Tensor | float | None = None
+
+if RESUME:
+    candidates = sorted(Path(checkpoint_dir).glob("model_*.pt"))
+    if candidates:
+        latest = candidates[-1]
+        if master_process:
+            print(f"Resuming from {latest}")
+        try:
+            ckpt = torch.load(latest, map_location=device, weights_only=False)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load checkpoint {latest}: {e}") from e
+
+        # Config mismatch is a warning, not an error - allows architecture iteration on old checkpoints
+        ckpt_config = ckpt.get("config", {})
+        current_config = asdict(raw_model.config)  # pyright: ignore
+        if ckpt_config != current_config and master_process:
+            print(
+                f"WARNING: checkpoint config differs from current. Loading anyway. "
+                f"ckpt={ckpt_config} current={current_config}"
+            )
+
+        raw_model.load_state_dict(ckpt["model"])  # pyright: ignore
+
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        elif master_process:
+            print("WARNING: no optimizer state in checkpoint; starting optimizer fresh")
+
+        if "train_loader" in ckpt:
+            train_loader.load_state_dict(ckpt["train_loader"])
+        elif master_process:
+            print(
+                "WARNING: no data loader state in checkpoint; data loader will restart from shard 0"
+            )
+
+        start_step = ckpt["step"] + 1
+        val_loss_accum = ckpt.get("val_loss")
+        wandb_run_id = ckpt.get("wandb_run_id")
+        if master_process:
+            print(f"Resumed at step {start_step}, val_loss={val_loss_accum}")
+else:
+    wandb_run_id = None
+
+# Truncate log only on fresh start; append on resume to preserve history
+log_mode = "a" if start_step > 0 else "w"
+with open(log_file, log_mode) as file:
+    if start_step > 0:
+        file.write(f"\n--- Resumed from step {start_step} ---\n")
+
+# wandb: master process only, resumes the same run if a run id was loaded from checkpoint
+if master_process:
+    if wandb_run_id is None:
+        wandb_run_id = wandb.util.generate_id()  # pyright: ignore[reportAttributeAccessIssue]
+    wandb.init(
+        project="skyai",
+        id=wandb_run_id,
+        resume="allow",
+        config=asdict(raw_model.config) # pyright: ignore
+        | {  # pyright: ignore
+            "max_steps": max_steps,
+            "max_lr": max_lr,
+            "min_lr": min_lr,
+            "warmup_steps": warmup_steps,
+            "total_batch_size": total_batch_size,
+            "micro_batch_size": B,
+            "sequence_length": T,
+            "grad_accum_steps": grad_accum_steps,
+            "ddp_world_size": ddp_world_size,
+            "weight_decay": 0.1,
+        },
+    )
+
+for step in range(start_step, max_steps):
     t0 = time.time()
     last_step = step == max_steps - 1
 
@@ -462,6 +556,7 @@ for step in range(max_steps):
             print(f"Validation Loss: {val_loss_accum:.4f}")
             with open(log_file, "a") as file:
                 file.write(f"Step: {step}, Validation Loss: {val_loss_accum:.4f}\n")
+            wandb.log({"val/loss": float(val_loss_accum)}, step=step) # pyright: ignore
 
     # Evaluate hellaswag
     if step % 250 == 0 or last_step:
@@ -503,6 +598,7 @@ for step in range(max_steps):
             print(f"HellaSwag Accuracy: {num_correct_norm} / {num_total} = {acc_norm:.4f}")
             with open(log_file, "a") as file:
                 file.write(f"Step: {step}, HellaSwag: {acc_norm:.4f}\n")
+            wandb.log({"eval/hellaswag_acc": acc_norm}, step=step)
 
     # Evaluate sampling of the model
     if (step % 250 == 0 and step != 0) or last_step:
@@ -535,10 +631,17 @@ for step in range(max_steps):
                 x = torch.cat((x, xcol), dim=1)
 
         # Print the generated text
+        sample_texts: list[str] = []
         for i in range(num_return_sequences):
             tokens = x[i, :max_length].tolist()
             decoded = enc.decode(tokens)
             print(f"Rank: {ddp_rank}, Sample: {i + 1} > {decoded}")
+            sample_texts.append(decoded)
+        if master_process:
+            wandb.log(
+                {"samples": wandb.Table(columns=["text"], data=[[t] for t in sample_texts])},
+                step=step,
+            )
 
     # Training Loop
     model.train()
@@ -582,6 +685,30 @@ for step in range(max_steps):
         )
         with open(log_file, "a") as file:
             file.write(f"Step: {step}, Training Loss: {loss_accum:.6f}\n")
+        wandb.log(
+            {
+                "train/loss": float(loss_accum),
+                "train/lr": lr,
+                "train/grad_norm": float(norm),
+                "train/tokens_per_sec": tokens_sec,
+                "train/dt_ms": dt,
+            },
+            step=step,
+        )
+        if step > 0 and (step % 10000 == 0 or last_step):
+            checkpoint_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
+            checkpoint = {
+                "model": raw_model.state_dict(),  # pyright: ignore
+                "config": asdict(raw_model.config),  # pyright: ignore
+                "step": step,
+                "val_loss": val_loss_accum,
+                "optimizer": optimizer.state_dict(),
+                "train_loader": train_loader.state_dict(),
+                "wandb_run_id": wandb_run_id,
+            }
+            torch.save(checkpoint, checkpoint_path)
 
+if master_process:
+    wandb.finish()
 if ddp:
     destroy_process_group()
