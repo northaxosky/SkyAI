@@ -33,6 +33,7 @@ logs/
 *.bin
 *.pt
 *.safetensors
+.cache/
 
 # Tests / coverage
 .pytest_cache/

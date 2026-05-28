@@ -14,6 +14,23 @@ from skyai.nn.attention import CausalSelfAttention
 from skyai.nn.layers import ResidualProjection
 
 
+@pytest.mark.slow
+class TestGPTFromPretrained:
+    def test_loads_gpt2_and_forwards(self) -> None:
+        model = GPT.from_pretrained("gpt2")
+
+        # Verify a real forward works with the loaded weights
+        idx = torch.zeros((1, 8), dtype=torch.long)
+        logits, loss = model(idx)
+
+        assert logits.shape == (1, 8, 50257)
+        assert loss is None
+
+    def test_rejects_unknown_variant(self) -> None:
+        with pytest.raises(ValueError, match="Unknown model type"):
+            GPT.from_pretrained("gpt2-mega")
+
+
 class TestGPTConfig:
     def test_defualts_match_124m(self) -> None:
         config = GPTConfig()
@@ -35,7 +52,7 @@ class TestGPT:
         model = GPT(GPTConfig())
         n_params = sum(p.numel() for p in model.parameters())
 
-        assert 123_000_000 < n_params < 125_000_000
+        assert 124_000_000 < n_params < 125_000_000
 
     def test_forward_shape_without_targets(self) -> None:
         config = self._tiny_config()

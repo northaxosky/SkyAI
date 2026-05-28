@@ -53,6 +53,10 @@ packages = ["src/skyai"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: tests that download large files or take >5 seconds (deselect with -m 'not slow')",
+]
+addopts = ["-m", "not slow"]
 
 [tool.ruff]
 line-length = 100
