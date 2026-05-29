@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
+from typing import Annotated
 
+import torch
 import typer
+
+from skyai.checkpoint import load_checkpoint
+from skyai.config.loader import load_config
+from skyai.config.schema import RunConfig
+from skyai.generate import generate
+from skyai.log import get_logger, setup_logging
+from skyai.nn.model import GPT, GPTConfig
 
 app = typer.Typer(
     name="skyai",
@@ -12,14 +23,101 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+logger = get_logger(__name__)
+
+def _rank_from_env() -> int:
+    """Read torchrun-provided RANK env var, default to 0 for single-process runs"""
+    return int(os.environ.get("RANK", "0"))
+
+def _setup_run(cfg_path: Path, overrides: list[str], *, log_name: str) -> RunConfig:
+    """Load config + overrides, init rank-aware logging, return validated RunConfig"""
+    cfg = load_config(cfg_path, overrides)
+    rank = _rank_from_env()
+    cfg.log.dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(cfg.log, rank=rank, log_path=cfg.log.dir / log_name)
+    return cfg
+
 @app.callback()
-def main() -> None:
+def _root() -> None:
     """SkyAI training/eval/sample harness"""
 
 @app.command()
 def version() -> None:
-    """Print the installed skyai version"""
+    """SkyAI training/eval/sample harness"""
     typer.echo(_pkg_version("skyai"))
+
+@app.command()
+def train(config: Annotated[Path, typer.Option(help="Path to YAML config")],
+          override: Annotated[list[str] | None, 
+                              typer.Option(help="Override config field, e.g. --override model.n_layer=4"),
+                             ] = None,
+          resume: Annotated[bool, 
+                            typer.Option(help="Auto-resume from latest checkpoint in cfg.checkpoint.dir"),
+                            ] = False,
+          ) -> None:
+    cfg = _setup_run(config, override or [], log_name="train.log")
+    logger.info(
+        f"train: {config=}, {resume=}, {cfg.total_batch_size=}, {cfg.schedule.max_steps=}"
+    )
+    raise NotImplementedError("Training loop not yet implemented")
+
+@app.command(name="eval")
+def evaluate(
+    config: Annotated[Path, typer.Option(help="Path to YAML config")],
+    checkpoint: Annotated[Path, typer.Option(help="Checkpoint path (.pt, .json, dir)")],
+    override: Annotated[list[str] | None,
+                typer.Option(help="Override config field, e.g. --override eval.hellaswag=true"),
+            ] = None                            
+             ) -> None:
+    cfg = _setup_run(config, override or [], log_name="eval.log")
+    bundle = load_checkpoint(checkpoint)
+    logger.info(f"eval: check step={bundle.step}, hellaswag={cfg.eval.hellaswag}")
+    raise NotImplementedError("Not yet implemented")
+
+@app.command()
+def sample(
+        checkpoint: Annotated[Path, typer.Option(help="Checkpoint path (.pt, .json, dir)")],
+        prompt: Annotated[str, typer.Option(help="Prompt text")] = "Hello, I am a language model",
+        max_new_tokens: Annotated[int, typer.Option(help="Tokens to generate")] = 50,
+        temperature: Annotated[float, typer.Option(help="Sampling temperature")] = 1.0,
+        top_k: Annotated[int, typer.Option(help="Top-k sampling cutoff")] = 50,
+        seed: Annotated[int | None, typer.Option(help="RNG seed for reproducibility")] = None,
+        device: Annotated[str, typer.Option(help="cuda or cpu")] = "cuda",
+) -> None:
+    """Generate text from a trained checkpoint"""
+    import tiktoken
+
+    bundle = load_checkpoint(checkpoint)
+    mc = bundle.config.model
+    model = GPT(GPTConfig(n_layer=mc.n_layer,
+                          n_head=mc.n_head,
+                          n_embed=mc.n_embed,
+                          vocab_size=mc.vocab_size,
+                          block_size=mc.block_size
+                          ))
+    model.load_state_dict(bundle.model_state)
+    model.to(device).eval()
+
+    enc = tiktoken.get_encoding("gpt2")
+    prompt_ids = torch.tensor([enc.encode(prompt)], dtype=torch.long, device=device)
+
+    rng: torch.Generator | None = None
+    if seed is not None:
+        rng = torch.Generator(device=device).manual_seed(seed)
+
+    out = generate(model, prompt_ids,
+                   max_new_tokens=max_new_tokens,
+                   max_context_len=mc.block_size,
+                   temperature=temperature,
+                   top_k=top_k,
+                   generator=rng
+                   )
+    typer.echo(enc.decode(out[0].tolist()))
+
+@app.command()
+def doctor() -> None:
+    """Environment + project sanity checks"""
+    typer.echo("Not yet implemented")
 
 if __name__ == "__main__":
     app()
