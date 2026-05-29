@@ -8,7 +8,6 @@ from pathlib import Path
 
 from skyai.config.schema import LogConfig
 
-
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] [rank %(rank)d] %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 

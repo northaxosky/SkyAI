@@ -1,10 +1,11 @@
 """Pytest Configuration: shared fixtures and environment setup"""
 
 import os
-import pytest
-import numpy as np
-
 from pathlib import Path
+
+import numpy as np
+import pytest
+
 
 @pytest.fixture
 def synthetic_shards(tmp_path: Path) -> Path:

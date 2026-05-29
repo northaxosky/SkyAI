@@ -9,6 +9,7 @@ import yaml
 
 from skyai.config.schema import RunConfig
 
+
 def load_config(path: str | Path, overrides: list[str] | None = None) -> RunConfig:
     """Load a YAML config, resolve any `extends:` chain, apply overrides, validate"""
     merged = _load_and_merge(Path(path), seen=set())

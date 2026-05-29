@@ -16,7 +16,7 @@ class ModelConfig(BaseModel):
     block_size: int = Field(gt=0, description="Max sequence length / context window")
 
     @model_validator(mode="after")
-    def _embed_divisible_by_head(self) -> "ModelConfig":
+    def _embed_divisible_by_head(self) -> ModelConfig:
         if self.n_embed % self.n_head != 0:
             raise ValueError(f"n_embed ({self.n_embed}) must be divisible by n_head ({self.n_head})")
         return self
@@ -42,7 +42,7 @@ class ScheduleConfig(BaseModel):
     max_steps: int = Field(gt=0)
 
     @model_validator(mode="after")
-    def _ordering(self) -> "ScheduleConfig":
+    def _ordering(self) -> ScheduleConfig:
         if self.min_lr > self.max_lr:
             raise ValueError(f"min_lr ({self.min_lr}) must be <= max_lr ({self.max_lr})")
         if self.warmup_steps > self.max_steps:
@@ -66,7 +66,7 @@ class LogConfig(BaseModel):
     wandb_entity: str | None = None
 
     @model_validator(mode="after")
-    def _wandb_requires_project(self) -> "LogConfig":
+    def _wandb_requires_project(self) -> LogConfig:
         if self.wandb and not self.wandb_project:
             raise ValueError("wandb=true requires wandb_project to be set")
         return self
@@ -75,8 +75,9 @@ class LogConfig(BaseModel):
 class CheckpointConfig(BaseModel):
     dir: Path = Path("checkpoints")
     every_n_steps: int = Field(default=1000, gt=0)
-    keep_last_n: int = Field(default=3, ge=1, description="Rolling window size")
-
+    keep_last_n: int = Field(default=3, ge=1, description="Rolling window size for step_*.pt")
+    best_metric: str | None = Field(default="val_loss", description="Name of metric to track for best.pt")
+    best_direction: Literal["min", "max"] = "min"
 
 class RunConfig(BaseModel):
     seed: int = 42
@@ -96,7 +97,7 @@ class RunConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _total_batch_divides_microbatch(self) -> "RunConfig":
+    def _total_batch_divides_microbatch(self) -> RunConfig:
         micro = self.data.batch_size * self.model.block_size
         if self.total_batch_size % micro != 0:
             raise ValueError(

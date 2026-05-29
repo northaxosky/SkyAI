@@ -1,7 +1,9 @@
 """skyai CLI entry point"""
 
 from __future__ import annotations
+
 from importlib.metadata import version as _pkg_version
+
 import typer
 
 app = typer.Typer(

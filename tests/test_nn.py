@@ -6,12 +6,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from skyai.nn.model import GPT, GPTConfig
+from skyai.nn.attention import CausalSelfAttention
 from skyai.nn.block import Block
 from skyai.nn.init import init_gpt2_weights
-from skyai.nn.mlp import MLP
-from skyai.nn.attention import CausalSelfAttention
 from skyai.nn.layers import ResidualProjection
+from skyai.nn.mlp import MLP
+from skyai.nn.model import GPT, GPTConfig
 
 
 @pytest.mark.slow

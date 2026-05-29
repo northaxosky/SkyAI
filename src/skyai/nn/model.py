@@ -57,7 +57,7 @@ class GPT(nn.Module):
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None
                 ) -> tuple[torch.Tensor, torch.Tensor | None]:
         _, T = idx.size()
-        if T > self.config.block_size:
+        if self.config.block_size < T:
             raise ValueError(f'Sequence length {T} exceeds block_size {self.config.block_size}')
         
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)

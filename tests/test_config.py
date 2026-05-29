@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from skyai.config.loader import load_config
 from skyai.config.schema import RunConfig
 
-
 # ---------- shared fixtures ----------
 
 def _valid_run_dict() -> dict:
