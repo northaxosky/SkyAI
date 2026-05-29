@@ -55,7 +55,10 @@ class ScheduleConfig(BaseModel):
 class EvalConfig(BaseModel):
     interval: int = Field(gt=0, description="Run eval every n training steps")
     val_steps: int = Field(default=20, gt=0, description="Microbatches per val pass")
-    hellaswag: bool = True
+    evals: list[Literal["hellaswag", "lambada"]] = Field(
+        default_factory=lambda: ["hellaswag"],
+        description="Names of evals to run, order preserved"
+    )
 
 
 class LogConfig(BaseModel):

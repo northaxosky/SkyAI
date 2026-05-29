@@ -1,11 +1,4 @@
-"""
-HellaSwag eval helpers, importable by both the training loop and standalone CLI.
-
-The wire format is documented at https://github.com/rowanz/hellaswag. Each example
-has a context and 4 candidate completions; the task is to pick the right one.
-We score by the average per-token NLL of each completion and pick argmin
-(this is the "acc_norm" variant; length-normalized).
-"""
+"""HellaSwag eval helpers, importable by both the training loop and standalone CLI."""
 
 from __future__ import annotations
 
@@ -17,9 +10,12 @@ from typing import Any
 import requests
 import tiktoken
 import torch
+import torch.distributed as dist
+from torch import nn
 from torch.nn import functional as F  # noqa: N812
 from tqdm import tqdm
 
+from skyai.eval.result import EvalResult
 from skyai.log import get_logger
 
 logger = get_logger(__name__)
@@ -31,8 +27,6 @@ HELLASWAG_URLS = {
     "val": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_val.jsonl",
     "test": "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/hellaswag_test.jsonl",
 }
-
-enc = tiktoken.get_encoding("gpt2")
 
 
 def download_file(url: str, fname: Path, chunk_size: int = 1024) -> None:
@@ -57,12 +51,20 @@ def download(split: str) -> None:
     DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     data_filename = DATA_CACHE_DIR / f"hellaswag_{split}.jsonl"
     if not data_filename.exists():
-        logger.info("Downloading %s to %s", HELLASWAG_URLS[split], data_filename)
+        logger.info(f"Downloading {HELLASWAG_URLS[split]} to {data_filename}")
         download_file(HELLASWAG_URLS[split], data_filename)
 
 
+def iterate_examples(split: str) -> Iterator[dict[str, Any]]:
+    """Yields the 10042 examples in val (or whatever split)"""
+    download(split)
+    with open(DATA_CACHE_DIR / f"hellaswag_{split}.jsonl") as f:
+        for line in f:
+            yield json.loads(line)
+
+
 def render_example(
-    example: dict[str, Any],
+    example: dict[str, Any], *, encoder: tiktoken.Encoding
 ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, int]:
     """
     Render a HellaSwag example as three tensors:
@@ -74,7 +76,7 @@ def render_example(
     label = example["label"]
     endings = example["endings"]
 
-    ctx_tokens = enc.encode(ctx)
+    ctx_tokens = encoder.encode(ctx)
     data: dict[str, Any] = {
         "label": label,
         "ctx_tokens": ctx_tokens,
@@ -84,7 +86,7 @@ def render_example(
     tok_rows: list[list[int]] = []
     mask_rows: list[list[int]] = []
     for end in endings:
-        end_tokens = enc.encode(" " + end)  # leading space because GPT-2 BPE
+        end_tokens = encoder.encode(" " + end)  # leading space because GPT-2 BPE
         tok_rows.append(ctx_tokens + end_tokens)
         mask_rows.append([0] * len(ctx_tokens) + [1] * len(end_tokens))
         data["ending_tokens"].append(end_tokens)
@@ -99,14 +101,6 @@ def render_example(
         mask[i, : len(mask_row)] = torch.tensor(mask_row)
 
     return data, tokens, mask, label
-
-
-def iterate_examples(split: str) -> Iterator[dict[str, Any]]:
-    """Yields the 10,042 examples in val (or whichever split is requested)."""
-    download(split)
-    with open(DATA_CACHE_DIR / f"hellaswag_{split}.jsonl") as f:
-        for line in f:
-            yield json.loads(line)
 
 
 def compute_completion_losses(
@@ -135,3 +129,57 @@ def get_most_likely_row(tokens: torch.Tensor, mask: torch.Tensor, logits: torch.
     """Return the candidate index (0..3) with the lowest length-normalized loss (acc_norm prediction)."""
     _, avg_loss = compute_completion_losses(tokens, mask, logits)
     return int(avg_loss.argmin().item())
+
+def evaluate_hellaswag(model: nn.Module, *, 
+                       encoder: tiktoken.Encoding,
+                       device: str | torch.device,
+                       rank: int,
+                       world_size: int,
+                       dtype: torch.dtype = torch.bfloat16,
+                       split: str = "val"
+) -> EvalResult:
+    """Score HellaSwag accuracy on a model, sharded across DDP ranks"""
+    model.eval()
+    device_type = "cuda" if str(device).startswith("cuda") else str(device)
+
+    num_correct = 0
+    num_correct_norm = 0
+    num_total = 0
+
+    for i, example in enumerate(iterate_examples(split)):
+        if i % world_size != rank:
+            continue
+
+        _, tokens, mask, label = render_example(example, encoder=encoder)
+        tokens = tokens.to(device)
+        mask = mask.to(device)
+
+        with torch.no_grad(), torch.autocast(device_type=device_type, dtype=dtype):
+            logits, _ = model(tokens)
+
+        sum_loss, avg_loss = compute_completion_losses(tokens, mask, logits)
+        pred = int(sum_loss.argmin().item())
+        pred_norm = int(avg_loss.argmin().item())
+
+        num_total += 1
+        num_correct += int(pred == label)
+        num_correct_norm += int(pred_norm == label)
+
+    if world_size > 1:
+        t_total = torch.tensor(num_total, dtype=torch.long, device=device)
+        t_correct = torch.tensor(num_correct, dtype=torch.long, device=device)
+        t_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+
+        dist.all_reduce(t_total, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_correct_norm, op=dist.ReduceOp.SUM)
+
+        num_total = int(t_total.item())
+        num_correct = int(t_correct.item())
+        num_correct_norm = int(t_correct_norm.item())
+
+    acc = num_correct / num_total if num_total > 0 else 0.0
+    acc_norm = num_correct_norm / num_total if num_total > 0 else 0.0
+
+    return EvalResult(name="hellaswag", metrics={"acc": acc, "acc_norm": acc_norm}, num_examples=num_total)
+

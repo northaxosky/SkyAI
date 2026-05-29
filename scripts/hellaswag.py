@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import tiktoken
 import torch
 from dotenv import load_dotenv
 from transformers import GPT2LMHeadModel
@@ -34,11 +35,12 @@ def evaluate(model_type: str, device: str) -> None:
     torch.set_float32_matmul_precision("high")
     model = GPT2LMHeadModel.from_pretrained(model_type)
     model.to(device)  # pyright: ignore
+    enc = tiktoken.get_encoding("gpt2")
 
     num_correct_norm = 0
     num_correct = 0
     for num_total, example in enumerate(iterate_examples("val"), start=1):
-        data, tokens, mask, label = render_example(example)
+        data, tokens, mask, label = render_example(example, encoder=enc)
         tokens = tokens.to(device)
         mask = mask.to(device)
 

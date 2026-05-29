@@ -36,7 +36,7 @@ def _valid_run_dict() -> dict:
             "max_lr": 1.0e-3, "min_lr": 1.0e-4,
             "warmup_steps": 5, "max_steps": 50,
         },
-        "eval": {"interval": 10, "val_steps": 2, "hellaswag": False},
+        "eval": {"interval": 10, "val_steps": 2, "evals": ["hellaswag"]},
         "log": {"dir": "logs", "level": "INFO", "wandb": False, "wandb_project": None},
         "checkpoint": {"dir": "ckpt", "every_n_steps": 25, "keep_last_n": 3},
     }
@@ -72,7 +72,7 @@ schedule:
 eval:
     interval: 10
     val_steps: 2
-    hellaswag: false
+    evals: ["hellaswag"]
 log:
     dir: logs
     level: INFO
@@ -236,8 +236,8 @@ class TestOverrides:
 
     def test_bool_parse_false(self, tmp_path: Path) -> None:
         path = _write_yaml(tmp_path, "cfg.yaml", _full_yaml_body())
-        cfg = load_config(path, overrides=["eval.hellaswag=false"])
-        assert cfg.eval.hellaswag is False
+        cfg = load_config(path, overrides=["compile=false"])
+        assert cfg.compile is False
 
     def test_none_parse(self, tmp_path: Path) -> None:
         path = _write_yaml(tmp_path, "cfg.yaml", _full_yaml_body())
