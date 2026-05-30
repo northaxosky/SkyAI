@@ -78,9 +78,9 @@ def _resolve_device(local_rank: int) -> str:
 def _compute_grad_accum(cfg: RunConfig, world_size: int) -> int:
     """Validate total_batch_size divides cleanly into (B * T * world_size), return accum count"""
     tokens_per_step = cfg.data.batch_size * cfg.model.block_size * world_size
-    if cfg.total_batch_size & tokens_per_step != 0:
+    if cfg.total_batch_size % tokens_per_step != 0:
         raise ValueError(
-            f"total_batch_size ({cfg.total_batch_size}) must be divisble by B * T * world_size "
+            f"total_batch_size ({cfg.total_batch_size}) must be divisible by B * T * world_size "
             f"({cfg.data.batch_size} * {cfg.model.block_size} * {world_size} = {tokens_per_step})"
         )
     return cfg.total_batch_size // tokens_per_step
