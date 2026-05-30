@@ -55,11 +55,13 @@ def train(config: Annotated[Path, typer.Option(help="Path to YAML config")],
                             typer.Option(help="Auto-resume from latest checkpoint in cfg.checkpoint.dir"),
                             ] = False,
           ) -> None:
+    from skyai.training.loop import train as run_train
+
     cfg = _setup_run(config, override or [], log_name="train.log")
     logger.info(
         f"train: {config=}, {resume=}, {cfg.total_batch_size=}, {cfg.schedule.max_steps=}"
     )
-    raise NotImplementedError("Training loop not yet implemented")
+    run_train(cfg, resume=resume)
 
 @app.command(name="eval")
 def evaluate(
