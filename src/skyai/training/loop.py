@@ -6,7 +6,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import tiktoken
@@ -226,7 +226,21 @@ def _run_val_loss(
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
     return float(val_loss_accum.item())
 
-def train(cfg: RunConfig, *, resume: bool = False) -> None:
+def _build_metrics(model: nn.Module, step_losses: list[float], final_val_loss: float | None, sample_text: list[str] | None) -> dict[str, Any]:
+    """Bundle the runs quantitative output for golden test comparison"""
+    flat = torch.cat([p.detach().flatten() for p in model.parameters()])
+    return {
+        "step_losses": step_losses,
+        "final_val_loss": final_val_loss,
+        "sample_text": sample_text,
+        "param_checksum": {
+            "sum": float(flat.sum().item()),
+            "norm": float(flat.norm().item()),
+            "n_params": int(flat.numel())
+        }
+    }
+
+def train(cfg: RunConfig, *, resume: bool = False) -> dict[str, Any] | None:
     """End-to-end training loop, single-process or DDP via torchrun"""
     dist_info = _init_distributed()
     device = _resolve_device(dist_info.local_rank)
@@ -252,6 +266,8 @@ def train(cfg: RunConfig, *, resume: bool = False) -> None:
     )
     encoder = tiktoken.get_encoding(cfg.model.tokenizer)
     last_val_loss: float | None = None
+    last_samples: list[str] | None = None
+    step_losses: list[float] = []
 
     if dist_info.is_master:
         logger.info(
@@ -300,8 +316,9 @@ def train(cfg: RunConfig, *, resume: bool = False) -> None:
                     generator=rng,
                 )
                 if dist_info.is_master:
+                    last_samples = samples
                     for i, s in enumerate(samples):
-                        logger.info(f"step {step}: sample {i + 1}: {s}")
+                        logger.info(f"Step {step}: sample {i + 1}: {s}")
 
             # ---- Training step ----
             loss, grad_norm, lr = _run_train_step(
@@ -325,6 +342,7 @@ def train(cfg: RunConfig, *, resume: bool = False) -> None:
                     "train/tokens_per_sec": tokens_per_sec,
                     "train/dt_ms": dt * 1000,
                 }, step=step)
+                step_losses.append(loss)
 
             # ---- Periodic checkpoint (after training step is complete) ----
             if step > 0 and (step % cfg.checkpoint.every_n_steps == 0 or last_step):
@@ -342,7 +360,13 @@ def train(cfg: RunConfig, *, resume: bool = False) -> None:
                     best_metric=cfg.checkpoint.best_metric,
                     best_direction=cfg.checkpoint.best_direction,
                 )
+        if dist_info.is_master:
+            metrics = _build_metrics(raw_model, step_losses, last_val_loss, last_samples)
+        else:
+            metrics = None
+
     finally:
         wb.finish()
         if dist_info.is_ddp:
             destroy_process_group()
+    return metrics
