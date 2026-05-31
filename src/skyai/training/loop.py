@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -17,7 +18,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from skyai.checkpoint import load_checkpoint, restore_rng, save_checkpoint
-from skyai.config.schema import RunConfig
+from skyai.config.schema import RecoveryConfig, RunConfig
 from skyai.data.loader import DataLoader
 from skyai.eval import run_evals
 from skyai.log import get_logger
@@ -25,6 +26,12 @@ from skyai.nn.model import GPT, GPTConfig
 from skyai.sample import sample
 from skyai.training.optimizer import build_optimizer
 from skyai.training.profiler import Profiler
+from skyai.training.recovery import (
+    NonFiniteGradError,
+    detect_non_finite_grad,
+    diagnose_oom,
+    is_oom_error,
+)
 from skyai.training.schedule import CosineSchedule
 from skyai.wandb_logger import WandbLogger
 
@@ -193,7 +200,8 @@ def _run_train_step(
         optimizer: torch.optim.Optimizer,
         schedule: CosineSchedule,
         dist_info: DistInfo,
-        profiler: Profiler, *,
+        profiler: Profiler, 
+        recovery: RecoveryConfig, *,
         step: int,
         grad_accum_steps: int,
         grad_clip: float,
@@ -207,8 +215,9 @@ def _run_train_step(
     loss_accum = torch.zeros((), device=device)
 
     for micro_step in range(grad_accum_steps):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
+        with profiler.region("data"):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
 
         # DDP sync skip: only sync grads on the final micro step
         if dist_info.is_ddp:
@@ -224,10 +233,21 @@ def _run_train_step(
             loss.backward()
 
     if dist_info.is_ddp:
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+        with profiler.region("ddp_loss_reduce"):
+            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
     with profiler.region("grad_clip"):
         grad_norm = torch.nn.utils.clip_grad_norm_(forward_model.parameters(), grad_clip)
+
+    bad_param = detect_non_finite_grad(forward_model)
+    if bad_param is not None:
+        msg = (f"Non-finite gradient at step {step} in '{bad_param}."
+               f"loss={float(loss_accum.item()):4.f}, grad_norm={float(grad_norm.item())}")
+        if recovery.nan_grad_action == "halt":
+            raise NonFiniteGradError(msg)
+        logger.warning(f"SKIP {msg}")
+        optimizer.zero_grad()
+        return float("nan"), float("nan"), schedule.lr_for(step)            
 
     lr = schedule.lr_for(step)
     for pg in optimizer.param_groups:
@@ -380,7 +400,7 @@ def train(cfg: RunConfig, *, resume: bool = False) -> dict[str, Any] | None:
 
             # ---- Training step ----
             loss, grad_norm, lr = _run_train_step(
-                forward_model, train_loader, optimizer, schedule, dist_info, profiler,
+                forward_model, train_loader, optimizer, schedule, dist_info, profiler, cfg.recovery,
                 step=step, grad_accum_steps=grad_accum_steps,
                 grad_clip=cfg.grad_clip, device=device,
                 device_type=device_type, dtype=dtype,
@@ -389,18 +409,22 @@ def train(cfg: RunConfig, *, resume: bool = False) -> dict[str, Any] | None:
             dt = time.time() - t0
             tokens_per_sec = cfg.total_batch_size / dt
             if dist_info.is_master:
-                logger.info(
-                    f"step {step}: loss={loss:.6f} lr={lr:.4e} "
-                    f"norm={grad_norm:.4f} dt={dt * 1000:.1f}ms tok/s={tokens_per_sec:.0f}"
-                )
-                wb.log_metrics({
-                    "train/loss": loss,
-                    "train/lr": lr,
-                    "train/grad_norm": grad_norm,
-                    "train/tokens_per_sec": tokens_per_sec,
-                    "train/dt_ms": dt * 1000,
-                }, step=step)
-                step_losses.append(loss)
+                if math.isfinite(loss):
+                    logger.info(
+                        f"step {step}: loss={loss:.6f} lr={lr:.4e} "
+                        f"norm={grad_norm:.4f} dt={dt * 1000:.1f}ms tok/s={tokens_per_sec:.0f}"
+                    )
+                    wb.log_metrics({
+                        "train/loss": loss,
+                        "train/lr": lr,
+                        "train/grad_norm": grad_norm,
+                        "train/tokens_per_sec": tokens_per_sec,
+                        "train/dt_ms": dt * 1000,
+                    }, step=step)
+                    step_losses.append(loss)
+                else:
+                    logger.warning(f"step {step}: SKIPPED (non-finite grad)")
+                    wb.log_metrics({"train/skipped": 1.0}, step=step)
 
             # ---- Periodic checkpoint (after training step is complete) ----
             if step > 0 and (step % cfg.checkpoint.every_n_steps == 0 or last_step):
@@ -427,6 +451,14 @@ def train(cfg: RunConfig, *, resume: bool = False) -> dict[str, Any] | None:
         else:
             metrics = None
 
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        if not is_oom_error(e):
+            raise
+        current_step = step if "step" in locals() else start_step
+        if cfg.recovery.oom_dump_diagnostics:
+            diagnose_oom(e, step=current_step, cfg=cfg, world_size=dist_info.world_size)
+        raise
+    
     finally:
         profiler.flush(step if 'step' in locals() else 0)
         wb.finish()

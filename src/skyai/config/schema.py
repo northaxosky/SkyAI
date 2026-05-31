@@ -140,6 +140,12 @@ class ProfilingConfig(BaseModel):
     cuda_sync: bool = Field(default=False, description="Force torch.cuda.synchronize for precise timing (expensive)")
 
 
+class RecoveryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nan_grad_action: Literal["halt", "skip"] = Field(default="halt", description="What to do when a parameter gradient is NaN/Inf")
+    oom_dump_diagnostics: bool = Field(default=True, description="On torch.cuda.OutOfMemoryError, log VRAM stats and batch geometry")
+
 class CheckpointConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -166,6 +172,7 @@ class RunConfig(BaseModel):
     eval: EvalConfig
     log: LogConfig = LogConfig()
     profiling: ProfilingConfig = ProfilingConfig()
+    recovery: RecoveryConfig = RecoveryConfig()
     checkpoint: CheckpointConfig = CheckpointConfig()
 
     @model_validator(mode="after")

@@ -16,6 +16,7 @@ from skyai.config.schema import (
     ModelConfig,
     OptimConfig,
     ProfilingConfig,
+    RecoveryConfig,
     RunConfig,
     ScheduleConfig,
 )
@@ -30,6 +31,11 @@ from skyai.training.schedule import CosineSchedule
 def _noop_profiler() -> Profiler:
     """Disabled profiler so call sites can pass the new positional arg without timing anything."""
     return Profiler(ProfilingConfig(enabled=False), device="cpu", rank=0)
+
+
+def _default_recovery() -> RecoveryConfig:
+    """Halt-mode recovery; matches production default. Suite has no NaNs so it never trips."""
+    return RecoveryConfig()
 
 
 def _tiny_gpt(vocab_size: int = 50304) -> GPT:
@@ -274,7 +280,7 @@ class TestRunTrainStep:
         dist_info = loop.DistInfo(rank=0, local_rank=0, world_size=1)
 
         loss, grad_norm, lr = loop._run_train_step(
-            model, loader, optim, sched, dist_info, _noop_profiler(),  # pyright: ignore
+            model, loader, optim, sched, dist_info, _noop_profiler(), _default_recovery(),  # pyright: ignore
             step=0, grad_accum_steps=2, grad_clip=1.0,
             device="cpu", device_type="cpu", dtype=torch.float32,
         )
@@ -290,18 +296,18 @@ class TestRunTrainStep:
         dist_info = loop.DistInfo(rank=0, local_rank=0, world_size=1)
 
         loss0, *_ = loop._run_train_step(
-            model, loader, optim, sched, dist_info, _noop_profiler(),  # pyright: ignore
+            model, loader, optim, sched, dist_info, _noop_profiler(), _default_recovery(),  # pyright: ignore
             step=0, grad_accum_steps=1, grad_clip=1.0,
             device="cpu", device_type="cpu", dtype=torch.float32,
         )
         for step in range(1, 15):
             loop._run_train_step(
-                model, loader, optim, sched, dist_info, _noop_profiler(),  # pyright: ignore
+                model, loader, optim, sched, dist_info, _noop_profiler(), _default_recovery(),  # pyright: ignore
                 step=step, grad_accum_steps=1, grad_clip=1.0,
                 device="cpu", device_type="cpu", dtype=torch.float32,
             )
         loss_after, *_ = loop._run_train_step(
-            model, loader, optim, sched, dist_info, _noop_profiler(),  # pyright: ignore
+            model, loader, optim, sched, dist_info, _noop_profiler(), _default_recovery(),  # pyright: ignore
             step=15, grad_accum_steps=1, grad_clip=1.0,
             device="cpu", device_type="cpu", dtype=torch.float32,
         )
