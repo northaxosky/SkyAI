@@ -4,9 +4,13 @@ Tokenize FineWeb-Edu and write sharded numpy files for training.
 Default behavior reproduces Karpathy's build-nanogpt setup: 100 shards of
 ~100M tokens each, GPT-2 BPE, uint16 packing, first shard goes to val.
 
+For wider tokenizers (cl100k_base, o200k_base), the shard dtype widens to
+uint32 automatically based on encoder.n_vocab.
+
 Usage:
-    uv run python scripts/fineweb.py                    # full 10B run
-    uv run python scripts/fineweb.py --max-shards 1     # local validation
+    uv run python scripts/fineweb.py                          # gpt2, full 10B run
+    uv run python scripts/fineweb.py --max-shards 1           # local validation
+    uv run python scripts/fineweb.py --tokenizer cl100k_base  # Phase 7 SkyAI-XL
 """
 
 from __future__ import annotations
@@ -25,19 +29,41 @@ from tqdm import tqdm
 # Load .env from repo root (regardless of cwd)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+
+def _dtype_for_vocab(n_vocab: int) -> np.dtype:
+    """Narrowest unsigned numpy dtype that can hold every token id."""
+    if n_vocab <= 2**16:
+        return np.dtype(np.uint16)
+    if n_vocab <= 2**32:
+        return np.dtype(np.uint32)
+    raise ValueError(f"n_vocab {n_vocab} exceeds uint32; need wider dtype")
+
+
 # Worker-side state. mp.Pool on Windows uses spawn, which re-imports this
-# module in each worker, so module-level init runs per-worker. That's what
-# we want for the encoder.
+# module per worker; on Linux fork, workers inherit parent globals. We
+# initialize with the default tokenizer here so import-time references resolve,
+# then re-init in main() and worker initializer for the user-chosen tokenizer.
 enc = tiktoken.get_encoding("gpt2")
 eot = enc._special_tokens["<|endoftext|>"]
+shard_dtype = _dtype_for_vocab(enc.n_vocab)
+
+
+def _init_tokenizer(tokenizer_name: str) -> None:
+    """Set the module-level encoder, EOT id, and shard dtype."""
+    global enc, eot, shard_dtype
+    enc = tiktoken.get_encoding(tokenizer_name)
+    eot = enc._special_tokens["<|endoftext|>"]
+    shard_dtype = _dtype_for_vocab(enc.n_vocab)
 
 
 def tokenize(doc: dict) -> np.ndarray:
     tokens = [eot]
     tokens.extend(enc.encode_ordinary(doc["text"]))
     arr = np.array(tokens)
-    assert (arr >= 0).all() and (arr < 2**16).all(), "token id exceeds uint16 range"
-    return arr.astype(np.uint16)
+    assert (arr >= 0).all() and (arr < enc.n_vocab).all(), (
+        f"token id out of range for tokenizer (n_vocab={enc.n_vocab})"
+    )
+    return arr.astype(shard_dtype)
 
 
 def write_shard(path: Path, tokens: np.ndarray) -> None:
@@ -68,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         help="Stop after N shards. 0 = no limit (default).",
     )
     parser.add_argument(
+        "--tokenizer",
+        default="gpt2",
+        help="tiktoken encoding name. gpt2 -> uint16 shards; cl100k_base / o200k_base -> uint32.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=default_output,
@@ -85,12 +116,14 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    _init_tokenizer(args.tokenizer)
+
     fw = load_dataset("HuggingFaceFW/fineweb-edu", name=args.remote_name, split="train")
     nprocs = max(1, (os.cpu_count() or 2) // 2)
 
-    with mp.Pool(nprocs) as pool:
+    with mp.Pool(nprocs, initializer=_init_tokenizer, initargs=(args.tokenizer,)) as pool:
         shard_index = 0
-        buffer = np.empty((args.shard_size,), dtype=np.uint16)
+        buffer = np.empty((args.shard_size,), dtype=shard_dtype)
         token_count = 0
         progress: tqdm | None = None
 
@@ -135,3 +168,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

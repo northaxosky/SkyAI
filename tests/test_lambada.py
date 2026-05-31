@@ -80,8 +80,8 @@ class TestScoreLambadaLogits:
             logits[0, -target_len + i, tid] = 100.0
 
         is_correct, sum_nll = lam._score_lambada_logits(logits, gt, target_len)
-        assert is_correct is True
-        assert sum_nll == pytest.approx(0.0, abs=1e-3)
+        assert int(is_correct.item()) == 1
+        assert float(sum_nll.item()) == pytest.approx(0.0, abs=1e-3)
 
     def test_one_wrong_token_marks_incorrect(self) -> None:
         vocab = 100
@@ -95,8 +95,8 @@ class TestScoreLambadaLogits:
         logits[0, -1, 50] = 100.0
 
         is_correct, sum_nll = lam._score_lambada_logits(logits, gt, target_len)
-        assert is_correct is False
-        assert sum_nll > 1.0
+        assert int(is_correct.item()) == 0
+        assert float(sum_nll.item()) > 1.0
 
     def test_uniform_logits_yield_max_entropy_nll(self) -> None:
         """Uniform logits over vocab V â per-token NLL = log(V); summed = target_len*log(V)"""
@@ -107,8 +107,8 @@ class TestScoreLambadaLogits:
 
         is_correct, sum_nll = lam._score_lambada_logits(logits, gt, target_len)
         # Argmax of all-zeros is index 0 for every position; never equals gt
-        assert is_correct is False
-        assert sum_nll == pytest.approx(target_len * math.log(vocab), rel=1e-4)
+        assert int(is_correct.item()) == 0
+        assert float(sum_nll.item()) == pytest.approx(target_len * math.log(vocab), rel=1e-4)
 
 
 class _StubModel(nn.Module):

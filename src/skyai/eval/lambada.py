@@ -50,17 +50,22 @@ def _render_lambada(text: str, encoder: tiktoken.Encoding, block_size: int) -> t
     gt_target_ids = torch.tensor(full_ids[-target_len:], dtype=torch.long)
     return input_ids, gt_target_ids, target_len
 
-def _score_lambada_logits(logits: torch.Tensor, gt_target_ids: torch.Tensor, target_len: int) -> tuple[bool, float]:
-    """Score model logits against the ground truth target span"""
+def _score_lambada_logits(logits: torch.Tensor, gt_target_ids: torch.Tensor, target_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Score model logits against the ground truth target span.
+
+    Returns (is_correct, sum_nll) as 0-d tensors on the same device as logits.
+    Keeping the result on-device lets the caller accumulate without per-example
+    GPU->CPU syncs.
+    """
     target_logits = logits[0, -target_len:, :] # (target_len, vocab)
 
     preds = target_logits.argmax(dim=-1)
-    is_correct = bool(torch.equal(preds, gt_target_ids))
+    is_correct = (preds == gt_target_ids).all().long()
 
     # fp32 for the softmax/log/gather
     log_probs = F.log_softmax(target_logits.float(), dim=-1)
     gt_log_probs = log_probs.gather(1, gt_target_ids.unsqueeze(1)).squeeze(1)
-    sum_nll = float(-gt_log_probs.sum().item())
+    sum_nll = -gt_log_probs.sum()
     return is_correct, sum_nll
 
 def evaluate_lambada(model:nn.Module, *,
@@ -76,10 +81,11 @@ def evaluate_lambada(model:nn.Module, *,
     device_type = "cuda" if str(device).startswith("cuda") else str(device)
     examples = _load_examples()
 
-    num_correct = 0
-    total_nll = 0.0
-    total_tokens = 0
-    num_total = 0
+    device_t = torch.device(device)
+    correct = torch.zeros((), dtype=torch.long, device=device_t)
+    total_nll = torch.zeros((), dtype=torch.float64, device=device_t)
+    total_tokens = torch.zeros((), dtype=torch.long, device=device_t)
+    total_examples = torch.zeros((), dtype=torch.long, device=device_t)
 
     for i, text in enumerate(examples):
         if i % world_size != rank:
@@ -93,22 +99,23 @@ def evaluate_lambada(model:nn.Module, *,
             logits, _ = model(input_ids)
 
         is_correct, sum_nll = _score_lambada_logits(logits, gt_target_ids, target_len)
-        num_correct += int(is_correct)
-        total_nll += sum_nll
+        correct += is_correct
+        total_nll += sum_nll.to(torch.float64)
         total_tokens += target_len
-        num_total += 1
+        total_examples += 1
 
     if world_size > 1:
-        t_int = torch.tensor([num_correct, total_tokens, num_total], dtype=torch.long, device=device)
-        t_nll = torch.tensor(total_nll, dtype=torch.float64, device=device)
-        dist.all_reduce(t_int, op=dist.ReduceOp.SUM)
-        dist.all_reduce(t_nll, op=dist.ReduceOp.SUM)
-        num_correct = int(t_int[0].item())
-        total_tokens = int(t_int[1].item())
-        num_total = int(t_int[2].item())
-        total_nll = float(t_nll.item())
+        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_nll, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_examples, op=dist.ReduceOp.SUM)
+
+    num_correct = int(correct.item())
+    num_total = int(total_examples.item())
+    n_tokens = int(total_tokens.item())
+    nll_sum = float(total_nll.item())
 
     accuracy = num_correct / num_total if num_total > 0 else 0.0
-    perplexity = math.exp(total_nll / total_tokens) if total_tokens > 0 else float("inf")
+    perplexity = math.exp(nll_sum / n_tokens) if n_tokens > 0 else float("inf")
 
     return EvalResult(name="lambada", metrics={"accuracy": accuracy, "perplexity": perplexity}, num_examples=num_total)

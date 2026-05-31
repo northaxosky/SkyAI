@@ -134,6 +134,39 @@ def _build_components(cfg: RunConfig, dist_info: DistInfo, device: str
     )
     return forward_model, raw_model, optimizer, schedule, train_loader, val_loader, grad_accum_steps
 
+_RESUME_CRITICAL_FIELDS: list[tuple[str, Any]] = [
+    ("total_batch_size", lambda c: c.total_batch_size),
+    ("model.n_layer", lambda c: c.model.n_layer),
+    ("model.n_head", lambda c: c.model.n_head),
+    ("model.n_embed", lambda c: c.model.n_embed),
+    ("model.vocab_size", lambda c: c.model.vocab_size),
+    ("model.block_size", lambda c: c.model.block_size),
+    ("model.tokenizer", lambda c: c.model.tokenizer),
+    ("data.batch_size", lambda c: c.data.batch_size),
+]
+
+
+def _assert_resume_compatible(current: RunConfig, saved: RunConfig) -> None:
+    """Hard-fail when resume-critical fields have drifted since the checkpoint.
+
+    These fields define the optimization trajectory (token budget per step,
+    architecture, micro-batch geometry). Resuming with different values silently
+    yields a different training run.
+    """
+    mismatches: list[str] = []
+    for name, getter in _RESUME_CRITICAL_FIELDS:
+        cur, old = getter(current), getter(saved)
+        if cur != old:
+            mismatches.append(f"  {name}: checkpoint={old!r}, current={cur!r}")
+    if mismatches:
+        raise RuntimeError(
+            "Cannot resume: config has drifted on resume-critical fields:\n"
+            + "\n".join(mismatches)
+            + "\nResuming with different values would not be the same run; "
+            "either revert the config or start a fresh run."
+        )
+
+
 def _maybe_resume(cfg: RunConfig, raw_model: GPT, optimizer: torch.optim.Optimizer, train_loader: DataLoader
                   ) -> tuple[int, str | None]:
     """Restore from latest potentially"""
@@ -143,6 +176,7 @@ def _maybe_resume(cfg: RunConfig, raw_model: GPT, optimizer: torch.optim.Optimiz
         return 0, None
 
     bundle = load_checkpoint(latest)
+    _assert_resume_compatible(cfg, bundle.config)
     raw_model.load_state_dict(bundle.model_state)
     optimizer.load_state_dict(bundle.optim_state)
     train_loader.load_state_dict(bundle.data_loader_state)
@@ -228,15 +262,25 @@ def _run_val_loss(
 
 def _build_metrics(model: nn.Module, step_losses: list[float], final_val_loss: float | None, sample_text: list[str] | None) -> dict[str, Any]:
     """Bundle the runs quantitative output for golden test comparison"""
-    flat = torch.cat([p.detach().flatten() for p in model.parameters()])
+    # Stream per-parameter so we don't concatenate every weight into a single
+    # multi-GB tensor at 1.5B scale. Cast to float32 for the square reduction
+    # to avoid bf16 overflow on large norms.
+    total_sum = 0.0
+    total_sq = 0.0
+    n_params = 0
+    for p in model.parameters():
+        pd = p.detach()
+        total_sum += float(pd.sum(dtype=torch.float32).item())
+        total_sq += float((pd.to(torch.float32) ** 2).sum().item())
+        n_params += pd.numel()
     return {
         "step_losses": step_losses,
         "final_val_loss": final_val_loss,
         "sample_text": sample_text,
         "param_checksum": {
-            "sum": float(flat.sum().item()),
-            "norm": float(flat.norm().item()),
-            "n_params": int(flat.numel())
+            "sum": total_sum,
+            "norm": total_sq ** 0.5,
+            "n_params": n_params,
         }
     }
 

@@ -143,6 +143,49 @@ class TestSchema:
         with pytest.raises(ValidationError):
             RunConfig.model_validate(d)
 
+    def test_nested_typo_in_model_rejected(self) -> None:
+        d = _valid_run_dict()
+        d["model"]["n_layre"] = 24
+        with pytest.raises(ValidationError):
+            RunConfig.model_validate(d)
+
+    def test_nested_typo_in_schedule_rejected(self) -> None:
+        d = _valid_run_dict()
+        d["schedule"]["max_step"] = 100
+        with pytest.raises(ValidationError):
+            RunConfig.model_validate(d)
+
+    def test_nested_typo_in_log_rejected(self) -> None:
+        d = _valid_run_dict()
+        d["log"]["wnadb"] = True
+        with pytest.raises(ValidationError):
+            RunConfig.model_validate(d)
+
+    def test_vocab_smaller_than_tokenizer_rejected(self) -> None:
+        d = _valid_run_dict()
+        d["model"]["vocab_size"] = 10000  # gpt2 has 50257
+        with pytest.raises(ValidationError, match="vocab_size"):
+            RunConfig.model_validate(d)
+
+    def test_vocab_way_above_tokenizer_rejected(self) -> None:
+        d = _valid_run_dict()
+        # gpt2 has 50257; 100277 is cl100k_base size, > 50257 + 1024
+        d["model"]["vocab_size"] = 100277
+        with pytest.raises(ValidationError, match="vocab_size"):
+            RunConfig.model_validate(d)
+
+    def test_vocab_with_alignment_padding_accepted(self) -> None:
+        d = _valid_run_dict()
+        d["model"]["vocab_size"] = 50304  # gpt2 n_vocab + 47 (pad-to-128)
+        cfg = RunConfig.model_validate(d)
+        assert cfg.model.vocab_size == 50304
+
+    def test_unknown_tokenizer_rejected(self) -> None:
+        d = _valid_run_dict()
+        d["model"]["tokenizer"] = "definitely-not-an-encoding"
+        with pytest.raises(ValidationError, match="tokenizer"):
+            RunConfig.model_validate(d)
+
 
 # ---------- TestLoader: YAML reading, extends, deep merge ----------
 

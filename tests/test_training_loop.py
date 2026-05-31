@@ -25,7 +25,7 @@ from skyai.training.schedule import CosineSchedule
 
 # ---- helpers --------------------------------------------------------------
 
-def _tiny_gpt(vocab_size: int = 128) -> GPT:
+def _tiny_gpt(vocab_size: int = 50304) -> GPT:
     return GPT(GPTConfig(
         n_layer=2, n_head=2, n_embed=32,
         vocab_size=vocab_size, block_size=16,
@@ -46,7 +46,8 @@ def _tiny_cfg(tmp_path: Path) -> RunConfig:
     _make_shards(data_root)
     return RunConfig(
         seed=42, dtype="float32", grad_clip=1.0, total_batch_size=16,
-        model=ModelConfig(n_layer=2, n_head=2, n_embed=32, vocab_size=128, block_size=4),
+        # vocab_size must satisfy the gpt2 tokenizer bound (>= 50257, <= 50257+1024)
+        model=ModelConfig(n_layer=2, n_head=2, n_embed=32, vocab_size=50304, block_size=4),
         data=DataConfig(root=data_root, batch_size=4),
         optim=OptimConfig(weight_decay=0.0),
         schedule=ScheduleConfig(max_lr=1e-3, min_lr=1e-4, warmup_steps=1, max_steps=10),
@@ -205,6 +206,56 @@ class TestMaybeResume:
         assert start_step == 8
         assert run_id == "run-abc"
         assert fresh_loader.state_dict() == {"position": 1234}
+
+    def test_rejects_resume_when_batch_size_changed(self, tmp_path: Path) -> None:
+        cfg = _tiny_cfg(tmp_path)
+        model = _tiny_gpt()
+        optim = build_optimizer(model, learning_rate=1e-3, weight_decay=0.0, device_type="cpu")
+        save_checkpoint(
+            cfg.checkpoint.dir, step=3,
+            model=model, optimizer=optim, data_loader=_StubLoader(),  # pyright: ignore
+            config=cfg, metrics={"val_loss": 4.2},
+            wandb_run_id=None, rank=0, keep_last_n=2,
+            best_metric="val_loss", best_direction="min",
+        )
+        # Bump batch_size and keep total_batch_size divisible by new microbatch
+        new_data = cfg.data.model_copy(update={"batch_size": 2})
+        new_cfg = cfg.model_copy(update={"data": new_data})
+        with pytest.raises(RuntimeError, match="data.batch_size"):
+            loop._maybe_resume(new_cfg, model, optim, _StubLoader())  # pyright: ignore
+
+    def test_rejects_resume_when_block_size_changed(self, tmp_path: Path) -> None:
+        cfg = _tiny_cfg(tmp_path)
+        model = _tiny_gpt()
+        optim = build_optimizer(model, learning_rate=1e-3, weight_decay=0.0, device_type="cpu")
+        save_checkpoint(
+            cfg.checkpoint.dir, step=3,
+            model=model, optimizer=optim, data_loader=_StubLoader(),  # pyright: ignore
+            config=cfg, metrics={"val_loss": 4.2},
+            wandb_run_id=None, rank=0, keep_last_n=2,
+            best_metric="val_loss", best_direction="min",
+        )
+        new_model = cfg.model.model_copy(update={"block_size": 8})
+        new_cfg = cfg.model_copy(update={"model": new_model})
+        with pytest.raises(RuntimeError, match="block_size"):
+            loop._maybe_resume(new_cfg, _tiny_gpt(), optim, _StubLoader())  # pyright: ignore
+
+    def test_rejects_resume_when_vocab_changed(self, tmp_path: Path) -> None:
+        cfg = _tiny_cfg(tmp_path)
+        model = _tiny_gpt()
+        optim = build_optimizer(model, learning_rate=1e-3, weight_decay=0.0, device_type="cpu")
+        save_checkpoint(
+            cfg.checkpoint.dir, step=3,
+            model=model, optimizer=optim, data_loader=_StubLoader(),  # pyright: ignore
+            config=cfg, metrics={"val_loss": 4.2},
+            wandb_run_id=None, rank=0, keep_last_n=2,
+            best_metric="val_loss", best_direction="min",
+        )
+        # 50305 is within the gpt2 +1024 padding window, differs from 50304
+        new_model = cfg.model.model_copy(update={"vocab_size": 50305})
+        new_cfg = cfg.model_copy(update={"model": new_model})
+        with pytest.raises(RuntimeError, match="vocab_size"):
+            loop._maybe_resume(new_cfg, _tiny_gpt(), optim, _StubLoader())  # pyright: ignore
 
 
 class TestRunTrainStep:

@@ -97,6 +97,21 @@ def _check_ddp_env() -> CheckResult:
         return ("FAIL", f"DDP vars non-integer or missing: {vars_} ({e})")
     if rank >= world or local_rank >= world:
         return ("FAIL", f"DDP vars inconsistent: RANK={rank} LOCAL_RANK={local_rank} WORLD_SIZE={world}")
+    # NCCL rendezvous needs MASTER_ADDR + MASTER_PORT; missing values will
+    # hang at init rather than fail loudly.
+    if world > 1:
+        master_addr = os.environ.get("MASTER_ADDR")
+        master_port = os.environ.get("MASTER_PORT")
+        if not master_addr:
+            return ("FAIL", f"WORLD_SIZE={world} but MASTER_ADDR not set; NCCL init will hang")
+        if not master_port:
+            return ("FAIL", f"WORLD_SIZE={world} but MASTER_PORT not set; NCCL init will hang")
+        try:
+            port = int(master_port)
+        except ValueError:
+            return ("FAIL", f"MASTER_PORT={master_port!r} is not an integer")
+        if not (1024 <= port <= 65535):
+            return ("WARN", f"MASTER_PORT={port} outside typical range [1024, 65535]")
     return ("OK", f"RANK={rank}/{world} LOCAL_RANK={local_rank}")
 
 
@@ -152,11 +167,71 @@ def _check_checkpoint_dir(cfg: RunConfig) -> CheckResult:
     if not os.access(d, os.W_OK):
         return ("FAIL", f"{d}: not writable")
     free_gb = shutil.disk_usage(d).free / (1024 ** 3)
-    if free_gb < 1.0:
-        return ("FAIL", f"{d}: {free_gb:.1f} GB free (need >= 1 GB)")
-    if free_gb < 5.0:
-        return ("WARN", f"{d}: {free_gb:.1f} GB free (low)")
-    return ("OK", f"{d} writable, {free_gb:.1f} GB free")
+
+    # Estimate checkpoint size from the GPT-2 parameter formula. AdamW saves
+    # the params + (m, v) running stats in fp32, so plan ~16 bytes per param
+    # (param + m + v + slack for buffers / serialization overhead).
+    m = cfg.model
+    n_params = (
+        m.vocab_size * m.n_embed                           # wte (tied with lm_head)
+        + m.block_size * m.n_embed                         # wpe
+        + m.n_layer * (12 * m.n_embed * m.n_embed          # 4 attn + 8 mlp matrices
+                        + 13 * m.n_embed)                   # LN params + biases (approx)
+        + 2 * m.n_embed                                    # final LN
+    )
+    per_ckpt_gb = n_params * 16 / (1024 ** 3)
+    needed_gb = per_ckpt_gb * (cfg.checkpoint.keep_last_n + 1)  # +1 for best.pt
+
+    if free_gb < needed_gb:
+        return ("FAIL",
+            f"{d}: {free_gb:.1f} GB free, need ~{needed_gb:.1f} GB "
+            f"({cfg.checkpoint.keep_last_n + 1} x {per_ckpt_gb:.1f} GB)")
+    if free_gb < needed_gb * 1.5:
+        return ("WARN",
+            f"{d}: {free_gb:.1f} GB free, ~{needed_gb:.1f} GB planned; tight headroom")
+    return ("OK",
+        f"{d} writable, {free_gb:.1f} GB free, ~{needed_gb:.1f} GB planned")
+
+
+def _check_world_size_divisibility(cfg: RunConfig) -> CheckResult:
+    """When WORLD_SIZE is set, total_batch_size must divide cleanly into B*T*world_size."""
+    world_str = os.environ.get("WORLD_SIZE")
+    if world_str is None:
+        return ("OK", "WORLD_SIZE not set; skipped")
+    try:
+        world = int(world_str)
+    except ValueError:
+        return ("FAIL", f"WORLD_SIZE={world_str!r} is not an integer")
+    tokens_per_step = cfg.data.batch_size * cfg.model.block_size * world
+    if cfg.total_batch_size % tokens_per_step != 0:
+        return ("FAIL",
+            f"total_batch_size ({cfg.total_batch_size}) is not divisible by "
+            f"B*T*WORLD_SIZE ({cfg.data.batch_size}*{cfg.model.block_size}*{world} "
+            f"= {tokens_per_step}); training will reject this at startup")
+    grad_accum = cfg.total_batch_size // tokens_per_step
+    return ("OK", f"grad_accum = {grad_accum} at WORLD_SIZE={world}")
+
+
+def _check_wandb_auth(cfg: RunConfig) -> CheckResult:
+    """Verify WANDB_API_KEY is actually accepted by the wandb server."""
+    if not cfg.log.wandb:
+        return ("OK", "wandb disabled in config")
+    if os.environ.get("WANDB_MODE") == "offline":
+        return ("OK", "WANDB_MODE=offline; no remote auth needed")
+    if not os.environ.get("WANDB_API_KEY"):
+        return ("FAIL", "WANDB_API_KEY not set but cfg.log.wandb=true")
+    try:
+        import wandb
+    except ImportError as e:
+        return ("FAIL", f"wandb not importable: {e}")
+    try:
+        viewer = wandb.Api(timeout=10).viewer
+        if viewer is None:
+            return ("FAIL", "WANDB_API_KEY rejected (viewer is None)")
+        username = getattr(viewer, "username", None) or "unknown"
+        return ("OK", f"authenticated as {username}")
+    except Exception as e:
+        return ("FAIL", f"wandb auth probe failed: {type(e).__name__}: {e}")
 
 
 _ENV_CHECKS: list[tuple[str, Check]] = [
@@ -189,6 +264,8 @@ def run_doctor(config_path: Path | None = None) -> int:
             return 1
         checks.append(("data", lambda: _check_data_shards(cfg)))
         checks.append(("checkpoint_dir", lambda: _check_checkpoint_dir(cfg)))
+        checks.append(("world_size", lambda: _check_world_size_divisibility(cfg)))
+        checks.append(("wandb_auth", lambda: _check_wandb_auth(cfg)))
 
     name_width = max(len(name) for name, _ in checks)
     counts: dict[Status, int] = {"OK": 0, "WARN": 0, "FAIL": 0}

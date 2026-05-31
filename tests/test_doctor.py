@@ -21,6 +21,8 @@ from skyai.cli.doctor import (
     _check_torch,
     _check_visible_devices,
     _check_wandb,
+    _check_wandb_auth,
+    _check_world_size_divisibility,
     run_doctor,
 )
 from skyai.cli.main import app
@@ -139,6 +141,45 @@ class TestDDPEnv:
         status, _ = _check_ddp_env()
         assert status == "OK"
 
+    def test_world_gt_1_without_master_addr_fails(self, monkeypatch):
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        monkeypatch.delenv("MASTER_ADDR", raising=False)
+        monkeypatch.setenv("MASTER_PORT", "29500")
+        status, msg = _check_ddp_env()
+        assert status == "FAIL"
+        assert "MASTER_ADDR" in msg
+
+    def test_world_gt_1_without_master_port_fails(self, monkeypatch):
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.delenv("MASTER_PORT", raising=False)
+        status, msg = _check_ddp_env()
+        assert status == "FAIL"
+        assert "MASTER_PORT" in msg
+
+    def test_master_port_non_integer_fails(self, monkeypatch):
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", "not-a-port")
+        status, msg = _check_ddp_env()
+        assert status == "FAIL"
+        assert "MASTER_PORT" in msg
+
+    def test_world_gt_1_with_master_addr_port_ok(self, monkeypatch):
+        monkeypatch.setenv("RANK", "0")
+        monkeypatch.setenv("LOCAL_RANK", "0")
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        monkeypatch.setenv("MASTER_ADDR", "localhost")
+        monkeypatch.setenv("MASTER_PORT", "29500")
+        status, _ = _check_ddp_env()
+        assert status == "OK"
+
 
 class TestGit:
     def test_in_repo_ok(self):
@@ -173,7 +214,7 @@ class TestWandb:
 def _minimal_cfg(tmp_path: Path, data_root: Path) -> Path:
     cfg = {
         "total_batch_size": 64,
-        "model": {"n_layer": 2, "n_head": 4, "n_embed": 64, "vocab_size": 100, "block_size": 16},
+        "model": {"n_layer": 2, "n_head": 4, "n_embed": 64, "vocab_size": 50304, "block_size": 16},
         "data": {"root": str(data_root), "batch_size": 2},
         "optim": {"weight_decay": 0.1},
         "schedule": {"max_lr": 6e-4, "min_lr": 6e-5, "warmup_steps": 1, "max_steps": 10},
@@ -230,6 +271,124 @@ class TestCheckpointDir:
         status, _ = _check_checkpoint_dir(cfg)
         assert status in {"OK", "WARN"}
         assert (tmp_path / "ckpts").exists()
+
+    def test_fails_when_free_disk_below_model_estimate(self, tmp_path, monkeypatch):
+        import shutil as _shutil
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        # Pretend almost no free disk; the model is small but >> 1 byte
+        FakeDU = type("DU", (), {})
+        fake = FakeDU()
+        fake.total = 100  # type: ignore[attr-defined]
+        fake.used = 99  # type: ignore[attr-defined]
+        fake.free = 1  # type: ignore[attr-defined]
+        monkeypatch.setattr(_shutil, "disk_usage", lambda p: fake)
+        status, msg = _check_checkpoint_dir(cfg)
+        assert status == "FAIL"
+        assert "need" in msg.lower()
+
+
+class TestWorldSizeDivisibility:
+    def test_unset_world_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("WORLD_SIZE", raising=False)
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        status, _ = _check_world_size_divisibility(cfg)
+        assert status == "OK"
+
+    def test_divisible_ok(self, tmp_path, monkeypatch):
+        # _minimal_cfg: total_batch_size=64, batch_size=2, block_size=16 -> B*T=32
+        # world=2 -> 32*2=64, total/64 = 1
+        monkeypatch.setenv("WORLD_SIZE", "2")
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        status, msg = _check_world_size_divisibility(cfg)
+        assert status == "OK"
+        assert "grad_accum" in msg
+
+    def test_indivisible_fails(self, tmp_path, monkeypatch):
+        # world=3 -> 32*3=96; 64 % 96 != 0
+        monkeypatch.setenv("WORLD_SIZE", "3")
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        status, msg = _check_world_size_divisibility(cfg)
+        assert status == "FAIL"
+        assert "divisible" in msg
+
+    def test_non_integer_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WORLD_SIZE", "eight")
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        status, _ = _check_world_size_divisibility(cfg)
+        assert status == "FAIL"
+
+
+class TestWandbAuth:
+    def test_skipped_when_wandb_disabled(self, tmp_path):
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(cfg_path, overrides=[])
+        status, _ = _check_wandb_auth(cfg)
+        assert status == "OK"
+
+    def test_offline_mode_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WANDB_MODE", "offline")
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(
+            cfg_path, overrides=["log.wandb=true", "log.wandb_project=p"]
+        )
+        status, _ = _check_wandb_auth(cfg)
+        assert status == "OK"
+
+    def test_missing_key_fails_when_wandb_on(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("WANDB_API_KEY", raising=False)
+        monkeypatch.delenv("WANDB_MODE", raising=False)
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(
+            cfg_path, overrides=["log.wandb=true", "log.wandb_project=p"]
+        )
+        status, msg = _check_wandb_auth(cfg)
+        assert status == "FAIL"
+        assert "WANDB_API_KEY" in msg
+
+    def test_invalid_key_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WANDB_API_KEY", "bogus")
+        monkeypatch.delenv("WANDB_MODE", raising=False)
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(
+            cfg_path, overrides=["log.wandb=true", "log.wandb_project=p"]
+        )
+        import wandb
+
+        class _BoomApi:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+            @property
+            def viewer(self):
+                raise RuntimeError("401 Unauthorized")
+        monkeypatch.setattr(wandb, "Api", _BoomApi)
+        status, msg = _check_wandb_auth(cfg)
+        assert status == "FAIL"
+        assert "auth probe failed" in msg
+
+    def test_valid_key_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WANDB_API_KEY", "valid")
+        monkeypatch.delenv("WANDB_MODE", raising=False)
+        cfg_path = _minimal_cfg(tmp_path, tmp_path / "data")
+        cfg = load_config(
+            cfg_path, overrides=["log.wandb=true", "log.wandb_project=p"]
+        )
+        import wandb
+
+        class _FakeViewer:
+            username = "tester"
+        class _FakeApi:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+            viewer = _FakeViewer()
+        monkeypatch.setattr(wandb, "Api", _FakeApi)
+        status, msg = _check_wandb_auth(cfg)
+        assert status == "OK"
+        assert "tester" in msg
 
 
 class TestRunDoctor:

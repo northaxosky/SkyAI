@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
 import torch
 
 from skyai.config.schema import RunConfig
@@ -56,34 +57,44 @@ def save_checkpoint(dir: str | Path, step: int, *,
                     best_direction: str = "min"
                     ) -> Path | None:
     """"Automatically write step_n.pt + .json, update latest.json & best.*"""
-    if rank != 0:
-        return None
-    
-    root = Path(dir)
-    root.mkdir(parents=True, exist_ok=True)
+    # Barrier after rank 0 finishes writing so non-zero ranks can't race ahead
+    # and hit the next NCCL collective mid-write (timeout risk for large XL
+    # checkpoints).
+    is_distributed = (
+        torch.distributed.is_available() and torch.distributed.is_initialized()
+    )
+    try:
+        if rank != 0:
+            return None
 
-    bundle = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "data_loader": data_loader.state_dict(),
-        "rng": _rng_state(),
-        "step": step,
-        "wandb_run_id": wandb_run_id
-    }
-    manifest = _build_manifest(step=step, config=config, metrics=metrics)
+        root = Path(dir)
+        root.mkdir(parents=True, exist_ok=True)
 
-    bundle_path = root / f"step_{step:08d}.pt"
-    manifest_path = root / f"step_{step:08d}.json"
+        bundle = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "data_loader": data_loader.state_dict(),
+            "rng": _rng_state(),
+            "step": step,
+            "wandb_run_id": wandb_run_id
+        }
+        manifest = _build_manifest(step=step, config=config, metrics=metrics)
 
-    _atomic_save_torch(bundle, bundle_path)
-    _atomic_write_json(manifest, manifest_path)
-    _atomic_write_json({"step": step}, root / _LATEST_NAME)
+        bundle_path = root / f"step_{step:08d}.pt"
+        manifest_path = root / f"step_{step:08d}.json"
 
-    logger.info("Saved checkpoint step=%d -> %s", step, bundle_path)
+        _atomic_save_torch(bundle, bundle_path)
+        _atomic_write_json(manifest, manifest_path)
+        _atomic_write_json({"step": step}, root / _LATEST_NAME)
 
-    _maybe_update_best(root=root, bundle_path=bundle_path, manifest=manifest, metrics=metrics, best_metric=best_metric, best_direction=best_direction)
-    _rotate(root, keep_last_n)
-    return bundle_path
+        logger.info("Saved checkpoint step=%d -> %s", step, bundle_path)
+
+        _maybe_update_best(root=root, bundle_path=bundle_path, manifest=manifest, metrics=metrics, best_metric=best_metric, best_direction=best_direction)
+        _rotate(root, keep_last_n)
+        return bundle_path
+    finally:
+        if is_distributed:
+            torch.distributed.barrier()
 
 def load_checkpoint(path: str | Path) -> CheckpointBundle:
     """Load a checkpoint pair"""
@@ -148,18 +159,21 @@ def latest_checkpoint(dir: str | Path) -> Path | None:
     return paths[-1] if paths else None
 
 def restore_rng(state: dict[str, Any]) -> None:
-    """Re-apply a captured RNG state to torch, cuda, and python random"""
+    """Re-apply a captured RNG state to torch, cuda, python random, and numpy"""
     if "torch" in state:
         torch.set_rng_state(state["torch"])
     if "cuda_all" in state and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(state["cuda_all"])
     if "python" in state:
         random.setstate(state["python"])
+    if "numpy" in state:
+        np.random.set_state(state["numpy"])
 
 def _rng_state() -> dict[str, Any]:
     s: dict[str, Any] = {
         "torch": torch.get_rng_state(),
-        "python": random.getstate()
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
     }
     if torch.cuda.is_available():
         s["cuda_all"] = torch.cuda.get_rng_state_all()

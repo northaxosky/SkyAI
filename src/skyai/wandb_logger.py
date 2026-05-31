@@ -26,12 +26,20 @@ class WandbLogger:
             logger.info(f"wandb disabled ({cfg.wandb=}, {rank=})")
             return
         
-        run_id = resume_id or wandb.util.generate_id() # pyright: ignore
+        if resume_id is not None:
+            # Resume mode: fail loudly if wandb can't find the prior run instead
+            # of silently starting a fresh one (which would split metrics across
+            # two runs after a checkpoint restore).
+            run_id = resume_id
+            resume_mode = "must"
+        else:
+            run_id = wandb.util.generate_id()  # pyright: ignore
+            resume_mode = "allow"
         wandb.init(
             project=cfg.wandb_project,
             entity=cfg.wandb_entity,
             id=run_id,
-            resume="allow",
+            resume=resume_mode,
             config=config
         )
         self.run_id = run_id

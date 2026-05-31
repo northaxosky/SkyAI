@@ -127,3 +127,31 @@ class TestBuildOptimizer:
         )
         assert opt.defaults["betas"] == (0.8, 0.99)
         assert opt.defaults["eps"] == 1e-9
+
+    def test_no_fused_kwarg_when_unsupported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If torch.optim.AdamW signature has no 'fused' param, don't pass it."""
+        import inspect
+        real_signature = inspect.signature
+
+        def fake_signature(obj):  # type: ignore[no-untyped-def]
+            if obj is torch.optim.AdamW:
+                sig = real_signature(obj)
+                params = [p for k, p in sig.parameters.items() if k != "fused"]
+                return inspect.Signature(parameters=params)
+            return real_signature(obj)
+
+        monkeypatch.setattr(inspect, "signature", fake_signature)
+        # Even with device_type="cuda", must not raise if fused is unsupported
+        opt = build_optimizer(
+            _ToyModel(), learning_rate=1e-3, weight_decay=0.1, device_type="cuda",
+        )
+        assert isinstance(opt, torch.optim.AdamW)
+
+    def test_no_fused_kwarg_when_cpu(self) -> None:
+        """Even with fused available, don't request it on cpu."""
+        opt = build_optimizer(
+            _ToyModel(), learning_rate=1e-3, weight_decay=0.1, device_type="cpu",
+        )
+        # On torch versions that expose 'fused', the default is None when we
+        # didn't pass it. Either way we must not have opted into True.
+        assert opt.defaults.get("fused") is not True

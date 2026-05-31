@@ -65,7 +65,7 @@ class TestEnabled:
         kwargs = mock_wandb.init.call_args.kwargs
 
         assert kwargs["id"] == "my-old-id"
-        assert kwargs["resume"] == "allow"
+        assert kwargs["resume"] == "must"
         assert wb.run_id == "my-old-id"
 
     def test_init_forwards_config_dict(self, mock_wandb: MagicMock) -> None:
@@ -73,6 +73,17 @@ class TestEnabled:
         WandbLogger(cfg=_enabled_cfg(), rank=0, config=run_cfg)
         kwargs = mock_wandb.init.call_args.kwargs
         assert kwargs["config"] == run_cfg
+
+    def test_resume_mode_must_when_resume_id_given(self, mock_wandb: MagicMock) -> None:
+        """Resume should be 'must' so wandb errors out if the prior run is gone,
+        instead of silently splitting metrics across a new run."""
+        WandbLogger(cfg=_enabled_cfg(), rank=0, resume_id="prior-run")
+        assert mock_wandb.init.call_args.kwargs["resume"] == "must"
+
+    def test_resume_mode_allow_when_no_resume_id(self, mock_wandb: MagicMock) -> None:
+        """Fresh runs use 'allow' so the first init doesn't fail on missing prior."""
+        WandbLogger(cfg=_enabled_cfg(), rank=0)
+        assert mock_wandb.init.call_args.kwargs["resume"] == "allow"
 
     def test_log_metrics_forwards_to_wandb(self, mock_wandb: MagicMock) -> None:
         wb = WandbLogger(cfg=_enabled_cfg(), rank=0)

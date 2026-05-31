@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -21,7 +22,7 @@ def build_optimizer(
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
         raise ValueError("Model has no trainable parameters")
-    
+
     decay_params = [p for p in params if p.dim() >= 2]
     nodecay_params = [p for p in params if p.dim() < 2]
 
@@ -30,7 +31,11 @@ def build_optimizer(
         {"params": nodecay_params, "weight_decay": 0.0},
     ]
 
+    # Only pass fused= when AdamW supports it AND we're on cuda. Older PyTorch
+    # builds without fused AdamW would TypeError if we always passed the kwarg.
+    kwargs: dict[str, Any] = {"lr": learning_rate, "betas": betas, "eps": eps}
     fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
-    use_fused = fused_available and device_type == "cuda"
+    if fused_available and device_type == "cuda":
+        kwargs["fused"] = True
 
-    return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, eps=eps, fused=use_fused)
+    return torch.optim.AdamW(optim_groups, **kwargs)

@@ -60,7 +60,7 @@ def _make_cfg() -> RunConfig:
             "max_lr": 1e-3, "min_lr": 1e-4,
             "warmup_steps": 5, "max_steps": 50,
         },
-        "eval": {"interval": 10, "val_steps": 2, "hellaswag": False},
+        "eval": {"interval": 10, "val_steps": 2, "evals": ["hellaswag"]},
     })
 
 
@@ -265,6 +265,61 @@ class TestRoundTrip:
         restore_rng(bundle.rng_state)
 
         assert torch.equal(torch.get_rng_state(), expected_state)
+
+    def test_numpy_rng_round_trip(self, save_kwargs: dict[str, Any]) -> None:
+        import numpy as np
+        np.random.seed(123)
+        _ = np.random.randn(10)
+        expected = np.random.randn(5)
+
+        np.random.seed(123)
+        _ = np.random.randn(10)
+        save_checkpoint(step=1, **save_kwargs)
+
+        np.random.seed(0)
+        _ = np.random.randn(50)
+        bundle = load_checkpoint(save_kwargs["dir"])
+        restore_rng(bundle.rng_state)
+
+        assert np.allclose(np.random.randn(5), expected)
+
+
+# ---------- TestDistributed: NCCL hygiene around large checkpoints ----------
+
+class TestDistributed:
+    def test_barrier_called_when_dist_initialized(
+        self, save_kwargs: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+        monkeypatch.setattr(torch.distributed, "barrier", lambda *a, **kw: calls.append(1))
+
+        save_checkpoint(step=1, **save_kwargs)
+        assert len(calls) == 1
+
+    def test_nonzero_rank_returns_none_but_still_barriers(
+        self, save_kwargs: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+        monkeypatch.setattr(torch.distributed, "barrier", lambda *a, **kw: calls.append(1))
+
+        result = save_checkpoint(step=1, rank=2, **save_kwargs)
+        assert result is None
+        assert len(calls) == 1
+
+    def test_no_barrier_when_dist_not_initialized(
+        self, save_kwargs: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+        monkeypatch.setattr(torch.distributed, "barrier", lambda *a, **kw: calls.append(1))
+
+        save_checkpoint(step=1, **save_kwargs)
+        assert calls == []
 
 
 # ---------- TestProvenance: manifest content ----------

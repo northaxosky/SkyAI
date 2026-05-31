@@ -5,10 +5,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+import tiktoken
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# tiktoken's get_encoding hits disk/network on first call; cache per name.
+_TOKENIZER_VOCAB_CACHE: dict[str, int] = {}
+
+
+def _tokenizer_vocab(name: str) -> int:
+    if name not in _TOKENIZER_VOCAB_CACHE:
+        try:
+            enc = tiktoken.get_encoding(name)
+        except (KeyError, ValueError) as e:
+            raise ValueError(
+                f"Unknown tokenizer '{name}'; "
+                f"must be a tiktoken encoding name (e.g. gpt2, cl100k_base, o200k_base)"
+            ) from e
+        _TOKENIZER_VOCAB_CACHE[name] = enc.n_vocab
+    return _TOKENIZER_VOCAB_CACHE[name]
 
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     n_layer: int = Field(gt=0, description="Number of transformer blocks")
     n_head: int = Field(gt=0, description="Number of attention heads")
     n_embed: int = Field(gt=0, description="Hidden dim, must be divisible by n_head")
@@ -21,9 +40,31 @@ class ModelConfig(BaseModel):
         if self.n_embed % self.n_head != 0:
             raise ValueError(f"n_embed ({self.n_embed}) must be divisible by n_head ({self.n_head})")
         return self
-    
+
+    @model_validator(mode="after")
+    def _vocab_matches_tokenizer(self) -> ModelConfig:
+        encoder_vocab = _tokenizer_vocab(self.tokenizer)
+        if self.vocab_size < encoder_vocab:
+            raise ValueError(
+                f"vocab_size ({self.vocab_size}) is smaller than tokenizer "
+                f"'{self.tokenizer}' n_vocab ({encoder_vocab}); valid token ids "
+                f"would be out of range of the lm_head"
+            )
+        # Allow padding for tensor-core alignment (e.g. 50257 -> 50304) but
+        # cap it so a wrong tokenizer/vocab pair fails loudly.
+        max_pad = 1024
+        if self.vocab_size > encoder_vocab + max_pad:
+            raise ValueError(
+                f"vocab_size ({self.vocab_size}) is more than {max_pad} above "
+                f"tokenizer '{self.tokenizer}' n_vocab ({encoder_vocab}); "
+                f"almost certainly a wrong tokenizer/vocab pair"
+            )
+        return self
+
 
 class DataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     root: Path = Field(description="Directory containing token shards")
     train_split: str = "train"
     val_split: str = "val"
@@ -31,12 +72,16 @@ class DataConfig(BaseModel):
 
 
 class OptimConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     weight_decay: float = Field(ge=0.0)
     betas: tuple[float, float] = (0.9, 0.95)
     eps: float = Field(default=1e-8, gt=0.0)
 
 
 class ScheduleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     max_lr: float = Field(gt=0.0)
     min_lr: float = Field(ge=0.0)
     warmup_steps: int = Field(ge=0)
@@ -52,8 +97,11 @@ class ScheduleConfig(BaseModel):
                 f"be <= max_steps ({self.max_steps})"
                 )
         return self
-    
+
+
 class EvalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     interval: int = Field(gt=0, description="Run eval every n training steps")
     val_steps: int = Field(default=20, gt=0, description="Microbatches per val pass")
     evals: list[Literal["hellaswag", "lambada"]] = Field(
@@ -69,6 +117,8 @@ class EvalConfig(BaseModel):
 
 
 class LogConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     dir: Path = Path("logs")
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     wandb: bool = False
@@ -80,22 +130,27 @@ class LogConfig(BaseModel):
         if self.wandb and not self.wandb_project:
             raise ValueError("wandb=true requires wandb_project to be set")
         return self
-    
+
 
 class CheckpointConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     dir: Path = Path("checkpoints")
     every_n_steps: int = Field(default=1000, gt=0)
     keep_last_n: int = Field(default=3, ge=1, description="Rolling window size for step_*.pt")
     best_metric: str | None = Field(default="val_loss", description="Name of metric to track for best.pt")
     best_direction: Literal["min", "max"] = "min"
 
+
 class RunConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     seed: int = 42
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     compile: bool = False
     grad_clip: float = Field(default=1.0, gt=0.0)
     total_batch_size: int = Field(gt=0, description="Effective batch size in TOKENS")
-    
+
     model: ModelConfig
     data: DataConfig
     optim: OptimConfig
@@ -103,8 +158,6 @@ class RunConfig(BaseModel):
     eval: EvalConfig
     log: LogConfig = LogConfig()
     checkpoint: CheckpointConfig = CheckpointConfig()
-
-    model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
     def _total_batch_divides_microbatch(self) -> RunConfig:
@@ -115,5 +168,3 @@ class RunConfig(BaseModel):
                 f" * model.block_size ({micro}); otherwise grad_accum is not an int"
             )
         return self
-
-        

@@ -31,6 +31,7 @@ HELLASWAG_URLS = {
 
 def download_file(url: str, fname: Path, chunk_size: int = 1024) -> None:
     resp = requests.get(url, stream=True)
+    resp.raise_for_status()
     total = int(resp.headers.get("content-length", 0))
     with (
         open(fname, "wb") as f,
@@ -53,6 +54,26 @@ def download(split: str) -> None:
     if not data_filename.exists():
         logger.info(f"Downloading {HELLASWAG_URLS[split]} to {data_filename}")
         download_file(HELLASWAG_URLS[split], data_filename)
+
+
+def _download_on_rank_zero(split: str, rank: int) -> None:
+    """Rank 0 fetches the split, others wait at a barrier; prevents N ranks
+    on a cold node from racing to write the same cache file."""
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if rank == 0:
+        download(split)
+    if is_distributed:
+        dist.barrier()
+    if rank != 0:
+        # Sanity-check that rank 0 actually produced the file; if it didn't,
+        # iterate_examples below would try to download from a non-zero rank
+        # and we'd race again.
+        data_filename = DATA_CACHE_DIR / f"hellaswag_{split}.jsonl"
+        if not data_filename.exists():
+            raise RuntimeError(
+                f"HellaSwag cache {data_filename} missing on rank {rank} "
+                f"after rank-0 download + barrier"
+            )
 
 
 def iterate_examples(split: str) -> Iterator[dict[str, Any]]:
@@ -130,7 +151,7 @@ def get_most_likely_row(tokens: torch.Tensor, mask: torch.Tensor, logits: torch.
     _, avg_loss = compute_completion_losses(tokens, mask, logits)
     return int(avg_loss.argmin().item())
 
-def evaluate_hellaswag(model: nn.Module, *, 
+def evaluate_hellaswag(model: nn.Module, *,
                        encoder: tiktoken.Encoding,
                        device: str | torch.device,
                        rank: int,
@@ -142,9 +163,14 @@ def evaluate_hellaswag(model: nn.Module, *,
     model.eval()
     device_type = "cuda" if str(device).startswith("cuda") else str(device)
 
-    num_correct = 0
-    num_correct_norm = 0
-    num_total = 0
+    # Race-safe cache fetch before any rank starts iterating.
+    _download_on_rank_zero(split, rank)
+
+    # Accumulate on-device so we don't sync GPU->CPU on every example.
+    device_t = torch.device(device)
+    correct = torch.zeros((), dtype=torch.long, device=device_t)
+    correct_norm = torch.zeros((), dtype=torch.long, device=device_t)
+    total = torch.zeros((), dtype=torch.long, device=device_t)
 
     for i, example in enumerate(iterate_examples(split)):
         if i % world_size != rank:
@@ -153,30 +179,24 @@ def evaluate_hellaswag(model: nn.Module, *,
         _, tokens, mask, label = render_example(example, encoder=encoder)
         tokens = tokens.to(device)
         mask = mask.to(device)
+        label_t = torch.tensor(label, dtype=torch.long, device=device_t)
 
         with torch.no_grad(), torch.autocast(device_type=device_type, dtype=dtype):
             logits, _ = model(tokens)
 
         sum_loss, avg_loss = compute_completion_losses(tokens, mask, logits)
-        pred = int(sum_loss.argmin().item())
-        pred_norm = int(avg_loss.argmin().item())
-
-        num_total += 1
-        num_correct += int(pred == label)
-        num_correct_norm += int(pred_norm == label)
+        correct += (sum_loss.argmin() == label_t).long()
+        correct_norm += (avg_loss.argmin() == label_t).long()
+        total += 1
 
     if world_size > 1:
-        t_total = torch.tensor(num_total, dtype=torch.long, device=device)
-        t_correct = torch.tensor(num_correct, dtype=torch.long, device=device)
-        t_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+        dist.all_reduce(total, op=dist.ReduceOp.SUM)
+        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(correct_norm, op=dist.ReduceOp.SUM)
 
-        dist.all_reduce(t_total, op=dist.ReduceOp.SUM)
-        dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
-        dist.all_reduce(t_correct_norm, op=dist.ReduceOp.SUM)
-
-        num_total = int(t_total.item())
-        num_correct = int(t_correct.item())
-        num_correct_norm = int(t_correct_norm.item())
+    num_total = int(total.item())
+    num_correct = int(correct.item())
+    num_correct_norm = int(correct_norm.item())
 
     acc = num_correct / num_total if num_total > 0 else 0.0
     acc_norm = num_correct_norm / num_total if num_total > 0 else 0.0

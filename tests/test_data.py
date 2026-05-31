@@ -27,6 +27,16 @@ class TestLoadTokens:
         tokens = load_tokens(shard)
         assert tokens.tolist() == [5, 100, 50000]
 
+    def test_uint32_shard_preserves_large_ids(self, tmp_path: Path) -> None:
+        """cl100k_base / o200k_base ids exceed uint16; loader must round-trip uint32 shards."""
+        shard = tmp_path / "shard.npy"
+        # 100000 > 2**16; representative of cl100k_base ids
+        np.save(shard, np.array([0, 50000, 100000, 200000], dtype=np.uint32))
+
+        tokens = load_tokens(shard)
+        assert tokens.dtype == torch.long
+        assert tokens.tolist() == [0, 50000, 100000, 200000]
+
 
 class TestDataLoader:
     def test_batch_shape(self, synthetic_shards: Path) -> None:
@@ -98,6 +108,55 @@ class TestDataLoader:
 
         assert torch.equal(actual_batch[0], expected_batch[0])
         assert torch.equal(actual_batch[1], expected_batch[1])
+
+    def test_shard_rotation_is_rank_consistent(self, synthetic_shards: Path) -> None:
+        """All ranks must rotate to the next shard at the same iteration"""
+        # synthetic_shards train: 2 shards * 1000 tokens. B*T = 8.
+        # world_size*B*T = 16, so rotation should occur near pos ~= 984.
+        rank0 = DataLoader(
+            synthetic_shards, split="train", batch_size=2, block_size=4,
+            rank=0, world_size=2,
+        )
+        rank1 = DataLoader(
+            synthetic_shards, split="train", batch_size=2, block_size=4,
+            rank=1, world_size=2,
+        )
+        for step in range(200):
+            rank0.next_batch()
+            rank1.next_batch()
+            assert rank0.current_shard == rank1.current_shard, (
+                f"step {step}: rank desync "
+                f"(rank0={rank0.current_shard}, rank1={rank1.current_shard})"
+            )
+
+    def test_state_dict_resume_for_nonzero_rank(self, synthetic_shards: Path) -> None:
+        """A resumed nonzero rank must continue from the same place as the
+        same rank that ran straight through"""
+        reference = DataLoader(
+            synthetic_shards, split="train", batch_size=2, block_size=4,
+            rank=1, world_size=2,
+        )
+        for _ in range(5):
+            reference.next_batch()
+        expected_x, expected_y = reference.next_batch()
+
+        rank0 = DataLoader(
+            synthetic_shards, split="train", batch_size=2, block_size=4,
+            rank=0, world_size=2,
+        )
+        for _ in range(5):
+            rank0.next_batch()
+        saved = rank0.state_dict()
+
+        fresh_rank1 = DataLoader(
+            synthetic_shards, split="train", batch_size=2, block_size=4,
+            rank=1, world_size=2,
+        )
+        fresh_rank1.load_state_dict(saved)
+        actual_x, actual_y = fresh_rank1.next_batch()
+
+        assert torch.equal(actual_x, expected_x)
+        assert torch.equal(actual_y, expected_y)
 
     def test_reset_returns_to_start(self, synthetic_shards: Path) -> None:
         loader = DataLoader(
