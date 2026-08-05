@@ -1,5 +1,15 @@
-# skyai (124M modern) — the modernization of gpt2. This file IS the diff:
-# RMSNorm / RoPE / SwiGLU / GQA, Muon + warmup-stable-decay, cl100k — at the same 124M scale.
+# skyai (modern arch at gpt2 scale) — the modernization of gpt2. This file IS the diff:
+# RMSNorm / RoPE / SwiGLU / GQA, Muon + warmup-stable-decay — at gpt2's depth, width,
+# tokenizer, and token budget. Third leg of the three-way ladder:
+#   gpt2 (AdamW + cosine) -> gpt2-muon (recipe change) -> skyai (architecture change).
+#
+# Tokenizer is gpt2 BPE rather than cl100k so all three runs consume the byte-identical
+# token stream in data/edu_fineweb10B, which makes val_loss directly comparable across
+# them (cross-tokenizer val_loss is not comparable without a bits-per-byte metric).
+#
+# Params: untied embeddings put this at ~151.6M total vs gpt2's 124.5M, but the
+# compute-bearing non-embedding params are ~74.3M vs 85.1M — GQA makes the transformer
+# stack smaller, and the entire total-param gap is the untied output table.
 extends: gpt2.yaml
 
 grad_clip: null  # modern recipe does not clip gradients
@@ -8,22 +18,25 @@ model:
   family: modern
   n_kv_head: 3              # 12 query heads -> 4:1 GQA
   hidden_multiple: 4
-  vocab_size: 100352        # cl100k_base n_vocab=100277 padded to 128
+  vocab_size: 50257         # logical gpt2 vocab; padded to 50304 internally by vocab_pad_multiple
   vocab_pad_multiple: 128
   rope_theta: 100000.0
-  tokenizer: cl100k_base
+  tokenizer: gpt2
   tie_weights: false
   logit_softcap: 15.0
   init_policy: sky-ai
 
 data:
-  root: data/fineweb_cl100k
+  root: data/edu_fineweb10B
 
 optim:
   type: muon-split
   weight_decay: 0.28
+  # Canonical modern-stack LRs. These are exactly the values that diverge on faithful
+  # gpt2 (tied wte + LayerNorm + biases); untied embeddings tolerate them here, so the
+  # LR gap vs gpt2-muon is architecture-caused rather than a free hyperparameter.
   embedding_lr: 0.3
-  unembedding_lr: 0.008
+  unembedding_lr: 0.008     # live here: lm_head is untied, unlike gpt2
   matrix_lr: 0.02
   muon_momentum: 0.95
   muon_beta2: 0.9
@@ -33,9 +46,10 @@ schedule:
   type: warmup-stable-decay
   max_lr: 1.0
   min_lr: 0.0
-  warmup_steps: 40
-  warmdown_ratio: 0.65
-  final_lr_frac: 0.05
+  # Schedule shape is held identical to gpt2-muon so the comparison isolates architecture:
+  # warmup_steps (715) and max_steps (19073) inherit from gpt2.yaml.
+  warmdown_ratio: 0.4
+  final_lr_frac: 0.0
 
 log:
   dir: logs/skyai

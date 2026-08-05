@@ -1,9 +1,10 @@
 # SkyAI
 
 A from-scratch language model project: build two decoder LMs by hand — a faithful
-**gpt2 (124M)** and a modern stack, **skyai**, scaling toward **skyai-xl (~1.5B)** —
-sharing one training harness. Every layer, every optimizer step, and every
-tokenization decision is implemented and explained rather than imported.
+**gpt2 (124M)** and a modern stack, **skyai**, trained head-to-head at the same
+scale on the same tokens — sharing one training harness. Every layer, every
+optimizer step, and every tokenization decision is implemented and explained
+rather than imported.
 
 > **🤗 The faithful gpt2 is trained and published →** [MuteBuster/gpt2-muon-124m](https://huggingface.co/MuteBuster/gpt2-muon-124m) — val_loss 2.99, HellaSwag acc_norm 0.324, beating the AdamW reference.
 
@@ -60,7 +61,7 @@ The weights are public:
 **🤗 [huggingface.co/MuteBuster/gpt2-muon-124m](https://huggingface.co/MuteBuster/gpt2-muon-124m)** —
 load with `AutoModelForCausalLM.from_pretrained("MuteBuster/gpt2-muon-124m")`.
 
-## skyai — the modern stack, scaling toward ~1.5B
+## skyai — the modern stack, at gpt2 scale
 
 [`src/skyai/`](./src/skyai/) rebuilds the model around the current decoder-LM stack:
 
@@ -71,16 +72,41 @@ load with `AutoModelForCausalLM.from_pretrained("MuteBuster/gpt2-muon-124m")`.
 - QK-normalization with q/k sharpening
 - Untied input and output embeddings
 - Logit soft-capping
-- cl100k tokenizer, with internal vocab padding kept separate from the logical vocab
+- Internal vocab padding kept separate from the logical vocab
 
 Training recipe: the Muon optimizer for the transformer matrices and AdamW for the
 embeddings and head, a warmup-stable-decay LR schedule, and width- and batch-scaled
 per-group learning rates.
 
+### The three-way comparison
+
+[`configs/skyai.yaml`](./configs/skyai.yaml) holds gpt2's depth, width, context,
+tokenizer, and token budget fixed and changes only the architecture, completing a
+controlled ladder where each rung moves one thing:
+
+| run | architecture | recipe |
+|---|---|---|
+| `gpt2` | faithful GPT-2 | AdamW + cosine |
+| `gpt2-muon` | faithful GPT-2 | **Muon-split + WSD** |
+| `skyai` | **modern stack** | Muon-split + WSD |
+
+All three train on the byte-identical gpt2-BPE token stream in `data/edu_fineweb10B`,
+so val_loss is directly comparable across them (it would not be across tokenizers
+without a bits-per-byte metric). The schedule shape is shared with `gpt2-muon`; the
+per-group learning rates differ because the canonical modern LRs diverge on the
+faithful architecture — tied embeddings and LayerNorm are precisely what can't take
+them, so that difference belongs to the architecture rather than to tuning.
+
+On parameters: untied embeddings put skyai at ~151.6M against gpt2's 124.5M, but the
+compute-bearing **non-embedding** params run *lower* — ~74.3M vs ~85.1M — because GQA
+shrinks the attention projections while the SwiGLU MLP is deliberately 8/3-scaled to
+stay param-matched to the GELU one. The entire total-param gap is the untied output
+table, which costs no FLOPs beyond the head matmul that both models already pay.
+
 Status: implemented, unit-tested, and validated locally on a single 4090 at small
-scale. [`configs/skyai-xl.yaml`](./configs/skyai-xl.yaml) (48 layers, 1536 hidden,
-32 heads, 8 KV heads, 2048 context) stages the ~1.5B run for 8×H100.
-*Results to be added when run.*
+scale. *Results to be added when run.*
+[`configs/skyai-xl.yaml`](./configs/skyai-xl.yaml) (48 layers, 1536 hidden, 32 heads,
+8 KV heads, 2048 context, cl100k) stages a ~1.5B run for 8×H100 and is parked.
 
 ## Project layout
 
@@ -92,7 +118,7 @@ notebooks/      prereq explorations and post-train sanity checks
 journal/        module-by-module learning notes
 tests/          shape + gradient unit tests, end-to-end smoke, golden numerics fixtures (per family)
 scripts/        shard_text.py (data prep) + train_reference.py (the original Karpathy monolith, a reference)
-configs/        base.yaml is the shared recipe anchor; gpt2.yaml and skyai-xl.yaml are the model targets; smoke.yaml is a tiny run
+configs/        gpt2.yaml is the shared recipe anchor; gpt2-muon.yaml and skyai.yaml are the comparison runs; skyai-xl.yaml is the parked scale-up; smoke.yaml is a tiny run
 data/           token shards (gitignored)
 checkpoints/    saved models (gitignored)
 ```
