@@ -28,6 +28,15 @@ model:
 
 data:
   root: data/edu_fineweb10B
+  # 32 rather than gpt2's 64, as a safety margin. skyai soft-caps logits in fp32, so the
+  # head retains extra full-size tensors through backward. Measured with compile=true
+  # (what the real run uses): ~0.99 GB/sample -> ~65 GB at bs=64 before optimizer state
+  # and DDP buckets, which is tight on an 80 GB card; bs=32 lands near ~33 GB. Eager mode
+  # reads ~1.38 GB/sample (~90 GB at bs=64) — don't size from that, torch.compile fuses
+  # most of the softcap chain. total_batch_size is unchanged, so grad_accum just goes
+  # 1 -> 2 and the optimization math is identical. Re-test bs=64 in the on-box smoke run;
+  # if steady-state peak stays under ~72 GB it is safe to use.
+  batch_size: 32
 
 optim:
   type: muon-split
