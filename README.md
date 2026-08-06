@@ -7,6 +7,11 @@ optimizer step, and every tokenization decision is implemented and explained
 rather than imported.
 
 > **🤗 The faithful gpt2 is trained and published →** [MuteBuster/gpt2-muon-124m](https://huggingface.co/MuteBuster/gpt2-muon-124m) — val_loss 2.99, HellaSwag acc_norm 0.324, beating the AdamW reference.
+>
+> **Both models are now trained head-to-head on 10B FineWeb-Edu tokens.** The modern stack
+> edges the faithful architecture on likelihood (val_loss 2.9548 vs 2.9653, LAMBADA ppl
+> 26.25 vs 27.81) at ~8% fewer FLOPs/token, and ties on accuracy benchmarks. Single-seed;
+> see [`.agents/runs/skyai-124m.md`](./.agents/runs/skyai-124m.md) for the full caveats.
 
 ## Why this repo exists
 
@@ -78,33 +83,45 @@ Training recipe: the Muon optimizer for the transformer matrices and AdamW for t
 embeddings and head, a warmup-stable-decay LR schedule, and width- and batch-scaled
 per-group learning rates.
 
-### The three-way comparison
+### Result: the three-way comparison
 
 [`configs/skyai.yaml`](./configs/skyai.yaml) holds gpt2's depth, width, context,
-tokenizer, and token budget fixed and changes only the architecture, completing a
-controlled ladder where each rung moves one thing:
+tokenizer, data, token budget, and schedule shape fixed and changes the architecture,
+completing a ladder where each rung moves one coherent stack change:
 
-| run | architecture | recipe |
-|---|---|---|
-| `gpt2` | faithful GPT-2 | AdamW + cosine |
-| `gpt2-muon` | faithful GPT-2 | **Muon-split + WSD** |
-| `skyai` | **modern stack** | Muon-split + WSD |
+| run | architecture | recipe | val_loss † | HellaSwag acc_norm |
+|---|---|---|---|---|
+| `gpt2` | faithful GPT-2 | AdamW + cosine | ~3.28 \* | ~0.30 \* |
+| `gpt2-muon` | faithful GPT-2 | **Muon-split + WSD** | 2.9653 | 0.3238 |
+| **`skyai`** | **modern stack** | Muon-split + WSD | **2.9548** | 0.3256 |
 
-All three train on the byte-identical gpt2-BPE token stream in `data/edu_fineweb10B`,
-so val_loss is directly comparable across them (it would not be across tokenizers
-without a bits-per-byte metric). The schedule shape is shared with `gpt2-muon`; the
-per-group learning rates differ because the canonical modern LRs diverge on the
-faithful architecture — tied embeddings and LayerNorm are precisely what can't take
-them, so that difference belongs to the architecture rather than to tuning.
+† Both trained models re-scored on the identical full 100M-token FineWeb-Edu val shard.
+\* Literature reference (build-nanogpt / llm.c), not run in-house — a looser comparison.
+
+On 10B FineWeb-Edu tokens at matched scale, the modern stack reaches **val_loss 2.9548 vs
+2.9653** — a **0.0104-nat advantage** (paired 95% CI [+0.0102, +0.0107]; lower on 190 of 190
+disjoint val blocks) — and **5.6% lower LAMBADA perplexity** (26.25 vs 27.81), at **~8%
+fewer FLOPs per token**. On accuracy-based benchmarks the two are **statistically
+indistinguishable** (HellaSwag acc_norm 0.3256 vs 0.3238, paired McNemar p = 0.56; LAMBADA
+accuracy 0.2793 vs 0.2826). Every likelihood metric favours the modern stack; every accuracy
+metric is null.
+
+Two things this result is **not**. It is **single-seed on both arms**, and seed-to-seed
+variance at this scale is plausibly the same size as the gap — precisely measured, not
+replicated. And the rung is a **bundle**: `init_policy`, `grad_clip`, and the per-group
+learning rates all moved with the architecture, so this measures the modern stack as a
+package, not any component in isolation. The recipe change (rung 2) was roughly an order of
+magnitude larger than the architecture change.
 
 On parameters: untied embeddings put skyai at ~151.6M against gpt2's 124.5M, but the
 compute-bearing **non-embedding** params run *lower* — ~74.3M vs ~85.1M — because GQA
 shrinks the attention projections while the SwiGLU MLP is deliberately 8/3-scaled to
-stay param-matched to the GELU one. The entire total-param gap is the untied output
-table, which costs no FLOPs beyond the head matmul that both models already pay.
+stay FLOP-matched to the GELU one. The entire total-param gap is the untied output table,
+which costs no FLOPs. Compare on FLOPs/token, never on total parameters.
 
-Status: implemented, unit-tested, and validated locally on a single 4090 at small
-scale. *Results to be added when run.*
+Full numbers, protocol, and the complete caveat list:
+[`.agents/runs/skyai-124m.md`](./.agents/runs/skyai-124m.md).
+
 [`configs/skyai-xl.yaml`](./configs/skyai-xl.yaml) (48 layers, 1536 hidden, 32 heads,
 8 KV heads, 2048 context, cl100k) stages a ~1.5B run for 8×H100 and is parked.
 
