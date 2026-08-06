@@ -1,15 +1,7 @@
 # skyai (modern arch at gpt2 scale) — the modernization of gpt2. This file IS the diff:
 # RMSNorm / RoPE / SwiGLU / GQA, Muon + warmup-stable-decay — at gpt2's depth, width,
-# tokenizer, and token budget. Third leg of the three-way ladder:
+# tokenizer, and token budget. Third leg of the ladder:
 #   gpt2 (AdamW + cosine) -> gpt2-muon (recipe change) -> skyai (architecture change).
-#
-# Tokenizer is gpt2 BPE rather than cl100k so all three runs consume the byte-identical
-# token stream in data/edu_fineweb10B, which makes val_loss directly comparable across
-# them (cross-tokenizer val_loss is not comparable without a bits-per-byte metric).
-#
-# Params: untied embeddings put this at ~151.6M total vs gpt2's 124.5M, but the
-# compute-bearing non-embedding params are ~74.3M vs 85.1M — GQA makes the transformer
-# stack smaller, and the entire total-param gap is the untied output table.
 extends: gpt2.yaml
 
 grad_clip: null  # modern recipe does not clip gradients
@@ -28,22 +20,13 @@ model:
 
 data:
   root: data/edu_fineweb10B
-  # 32 rather than gpt2's 64, as a safety margin. skyai soft-caps logits in fp32, so the
-  # head retains extra full-size tensors through backward. Measured with compile=true
-  # (what the real run uses): ~0.99 GB/sample -> ~65 GB at bs=64 before optimizer state
-  # and DDP buckets, which is tight on an 80 GB card; bs=32 lands near ~33 GB. Eager mode
-  # reads ~1.38 GB/sample (~90 GB at bs=64) — don't size from that, torch.compile fuses
-  # most of the softcap chain. total_batch_size is unchanged, so grad_accum just goes
-  # 1 -> 2 and the optimization math is identical. Re-test bs=64 in the on-box smoke run;
-  # if steady-state peak stays under ~72 GB it is safe to use.
-  batch_size: 32
+  batch_size: 32  # 32 * 1024 * 4 ranks * 4 accum = 524288; ~33GB/GPU vs ~65GB at bs=64
 
 optim:
   type: muon-split
   weight_decay: 0.28
-  # Canonical modern-stack LRs. These are exactly the values that diverge on faithful
-  # gpt2 (tied wte + LayerNorm + biases); untied embeddings tolerate them here, so the
-  # LR gap vs gpt2-muon is architecture-caused rather than a free hyperparameter.
+  # Canonical modern-stack LRs; these diverge on faithful gpt2 (tied wte + LayerNorm),
+  # so the gap vs gpt2-muon is architecture-caused, not a free hyperparameter.
   embedding_lr: 0.3
   unembedding_lr: 0.008     # live here: lm_head is untied, unlike gpt2
   matrix_lr: 0.02
@@ -55,8 +38,8 @@ schedule:
   type: warmup-stable-decay
   max_lr: 1.0
   min_lr: 0.0
-  # Schedule shape is held identical to gpt2-muon so the comparison isolates architecture:
-  # warmup_steps (715) and max_steps (19073) inherit from gpt2.yaml.
+  # warmup_steps (715) and max_steps (19073) inherit from gpt2.yaml: schedule shape is
+  # held identical to gpt2-muon so the comparison isolates architecture.
   warmdown_ratio: 0.4
   final_lr_frac: 0.0
 

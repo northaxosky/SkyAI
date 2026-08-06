@@ -1,9 +1,6 @@
 # skyai-xl (~1.5B) — the scale-up of skyai. Only dimensions, data, and budget change.
-# Data is expected to be tokenized from ClimbMix with scripts/shard_text.py.
-#
-# PARKED: staged, not run. skyai.yaml was retargeted to the gpt2-scale three-way
-# comparison (gpt2 BPE, FineWeb-Edu, gpt2-muon's schedule shape), so this file re-pins
-# the wider tokenizer and the untethered modern schedule it was actually designed for.
+# PARKED: staged, not run. Re-pins tokenizer and schedule because skyai.yaml was
+# retargeted to the gpt2-scale comparison.
 extends: skyai.yaml
 
 model:
