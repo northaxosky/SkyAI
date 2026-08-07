@@ -8,32 +8,36 @@ The code in this repo is one artifact of the learning process. The journal is th
 
 If you came here to evaluate this project, start with the journal. The code shows what I built; the journal shows what I understood.
 
+## Run results
+
+[`runs/`](./runs/) holds one document per completed training run — the results, the exact
+protocol they were measured under, how to state the finding defensibly, and the caveats
+that must stay attached to the numbers. These are the empirical counterpart to the module
+notes: the entries below record what I understood, `runs/` records what actually happened
+when it was trained.
+
+- [`runs/gpt2-muon-124m.md`](./runs/gpt2-muon-124m.md) — faithful GPT-2 with the Muon recipe
+- [`runs/skyai-124m.md`](./runs/skyai-124m.md) — the modern stack, head-to-head against it
+
 ## Structure
 
-One markdown per module, numbered by build order. Entries prefixed `00-prereq-*` cover the foundations I built up *before* SkyAI proper — Karpathy's Zero to Hero series, watched in order, journaled as I went:
+Entries prefixed `prereq-` cover the foundations I built up *before* SkyAI proper —
+Karpathy's Zero to Hero series and 3Blue1Brown's neural-network series, worked through in
+order and journaled as I went. These are deliberately short: capture-the-reaction notes,
+not polished essays.
 
 ```
-prereq-micrograd.md
-prereq-makemore-bigram.md
-prereq-makemore-mlp.md
-prereq-makemore-activations.md
-prereq-makemore-backprop-ninja.md
-prereq-makemore-wavenet.md
-prereq-lets-build-gpt.md
-prereq-gpt-tokenizer.md
-tokenizer.md
-attention.md
-transformer-block.md
-positional-encoding.md
-training-loop.md
-optimizer-and-schedules.md
-mixed-precision-and-flash-attention.md
-data-pipeline.md
-full-training-run.md
-evaluation.md
+prereq-3b1b.md              neural nets / backprop / attention, the visual intuition
+prereq-micrograd.md         autograd from scratch
+makemore-bigrams.md         counting, then the same thing as a neural net
+makemore-mlp.md             Bengio-style MLP language model
+makemore-activations.md     init, BatchNorm, and why activations die
+makemore-backprop.md        backprop ninja — every gradient by hand
+makemore-wavenet.md         hierarchical / dilated architecture
+lets-build-gpt.md           attention and the transformer block
+gpt-tokenizer.md            BPE from scratch, gpt2 vs cl100k
+01-reproduce-gpt2.md        reproducing GPT-2 124M in this repo
 ```
-
-(Numbering is approximate — it'll shift as the work unfolds. Prereq entries are intentionally short — capture-the-reaction quick notes, not polished essays.)
 
 ## What's in each entry
 

@@ -1,5 +1,5 @@
 # Tiny config for smoke testing the harness end-to-end.
-# Inherits everything from base.yaml, overrides for fast local CPU/single-GPU runs.
+# Inherits everything from gpt2.yaml; overrides only what a fast local sanity run needs.
 
 extends: gpt2.yaml
 
