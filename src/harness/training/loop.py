@@ -362,6 +362,18 @@ def _run_train_step(
     return float(loss_accum.item()), float(grad_norm.item()), lr
 
 
+def _val_steps(cfg: RunConfig, world_size: int) -> int:
+    """Micro-batches per val pass.
+
+    val_steps alone makes val_loss depend on batch_size and world_size, so two runs with
+    different geometry score different amounts of data. val_tokens pins the budget instead.
+    """
+    if cfg.eval.val_tokens is None:
+        return cfg.eval.val_steps
+    per_step = cfg.data.batch_size * cfg.model.block_size * world_size
+    return max(1, cfg.eval.val_tokens // per_step)
+
+
 def _run_val_loss(
     forward_model: nn.Module,
     val_loader: DataLoader,
@@ -516,7 +528,7 @@ def train(cfg: RunConfig, *, resume: bool = False) -> dict[str, Any] | None:
                         val_loader,
                         dist_info,
                         profiler,
-                        val_steps=cfg.eval.val_steps,
+                        val_steps=_val_steps(cfg, dist_info.world_size),
                         device=device,
                         device_type=device_type,
                         dtype=dtype,

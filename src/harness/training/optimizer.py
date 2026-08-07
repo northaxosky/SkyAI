@@ -85,6 +85,7 @@ class Muon(torch.optim.Optimizer):
                 grad = p.grad
                 state = self.state[p]
                 if not state:
+                    state["step"] = 0
                     state["momentum_buffer"] = torch.zeros_like(p)
                     rows, cols = p.shape
                     state["second_buffer"] = torch.zeros(
@@ -93,12 +94,15 @@ class Muon(torch.optim.Optimizer):
                         dtype=p.dtype,
                     )
 
+                state["step"] += 1
                 momentum_buffer = state["momentum_buffer"]
                 momentum_buffer.lerp_(grad, 1.0 - momentum)
                 update = grad.lerp(momentum_buffer, momentum)
 
                 update = _polar_express(update, ns_steps=ns_steps)
-                update = _normuon_scale(update, state["second_buffer"], beta2=beta2)
+                update = _normuon_scale(
+                    update, state["second_buffer"], beta2=beta2, step=state["step"]
+                )
 
                 rows, cols = p.shape
                 scaled_lr = lr * math.sqrt(max(1.0, rows / cols))
@@ -291,7 +295,7 @@ def _polar_express(x: torch.Tensor, *, ns_steps: int) -> torch.Tensor:
 
 
 def _normuon_scale(
-    update: torch.Tensor, second_buffer: torch.Tensor, *, beta2: float
+    update: torch.Tensor, second_buffer: torch.Tensor, *, beta2: float, step: int
 ) -> torch.Tensor:
     if second_buffer.shape[-1] == 1:
         v = update.square().mean(dim=1, keepdim=True)
@@ -301,7 +305,9 @@ def _normuon_scale(
         red_dim_size = update.size(0)
 
     second_buffer.lerp_(v, 1.0 - beta2)
-    v_mean = second_buffer / (1.0 - beta2)
+    # Adam-style debias: 1 - beta2**t, not 1 - beta2. The latter inflates the target
+    # norm by 1/sqrt(1-beta2) (3.16x at beta2=0.9) once the EMA warms up.
+    v_mean = second_buffer / (1.0 - beta2**step)
     old_norm = (v_mean.sum(dim=(-2, -1), keepdim=True) * red_dim_size).sqrt()
 
     scale = second_buffer.clamp_min(1e-10).rsqrt()

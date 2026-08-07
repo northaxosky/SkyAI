@@ -179,6 +179,27 @@ class TestBuildOptimizer:
         opt.step()
         assert not torch.equal(param, before)
 
+    def test_muon_update_norm_is_bias_corrected(self) -> None:
+        """Debias uses 1-beta2**t, so a constant gradient gives a step-invariant update.
+
+        With the wrong denominator (1-beta2) the update norm grows by 1/sqrt(1-beta2)
+        as the second-moment EMA warms up — a silent 3.16x LR inflation at beta2=0.9.
+        """
+        torch.manual_seed(0)
+        grad = torch.randn(16, 16)
+        param = nn.Parameter(torch.zeros(16, 16))
+        opt = Muon([param], lr=1.0, beta2=0.9, momentum=0.0)
+
+        norms = []
+        for _ in range(200):
+            param.grad = grad.clone()
+            before = param.detach().clone()
+            opt.step()
+            norms.append((param.detach() - before).norm().item())
+
+        assert norms[0] == pytest.approx(norms[-1], rel=0.02)
+        assert max(norms) / min(norms) < 1.1
+
     def test_muon_split_returns_optimizer_chain(self) -> None:
         model = GPT(
             GPTConfig(

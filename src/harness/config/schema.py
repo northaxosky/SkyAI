@@ -167,6 +167,11 @@ class EvalConfig(BaseModel):
 
     interval: int = Field(gt=0, description="Run eval every n training steps")
     val_steps: int = Field(default=20, gt=0, description="Microbatches per val pass")
+    val_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description="Val tokens per pass; overrides val_steps so val_loss does not depend on batch/world geometry",
+    )
     evals: list[Literal["hellaswag", "lambada"]] = Field(
         default_factory=lambda: ["hellaswag"], description="Names of evals to run, order preserved"
     )

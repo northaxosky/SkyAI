@@ -222,6 +222,33 @@ class TestComputeGradAccum:
             loop._compute_grad_accum(cfg, world_size=5)
 
 
+class TestValSteps:
+    def test_falls_back_to_val_steps(self, tmp_path: Path) -> None:
+        cfg = _tiny_cfg(tmp_path)
+        assert cfg.eval.val_tokens is None
+        assert loop._val_steps(cfg, world_size=1) == cfg.eval.val_steps
+
+    def test_val_tokens_is_geometry_independent(self, tmp_path: Path) -> None:
+        """Same token budget scored regardless of how batch x world factorizes."""
+        cfg = _tiny_cfg(tmp_path)
+        block = cfg.model.block_size
+        cfg = cfg.model_copy(
+            update={"eval": cfg.eval.model_copy(update={"val_tokens": 8 * 4 * block})}
+        )
+
+        wide = cfg.model_copy(update={"data": cfg.data.model_copy(update={"batch_size": 8})})
+        narrow = cfg.model_copy(update={"data": cfg.data.model_copy(update={"batch_size": 4})})
+
+        tokens_wide = loop._val_steps(wide, world_size=1) * 8 * block
+        tokens_narrow = loop._val_steps(narrow, world_size=2) * 4 * 2 * block
+        assert tokens_wide == tokens_narrow == 8 * 4 * block
+
+    def test_never_returns_zero(self, tmp_path: Path) -> None:
+        cfg = _tiny_cfg(tmp_path)
+        cfg = cfg.model_copy(update={"eval": cfg.eval.model_copy(update={"val_tokens": 1})})
+        assert loop._val_steps(cfg, world_size=8) == 1
+
+
 class TestSetSeeds:
     def test_same_seed_same_tensor(self) -> None:
         loop._set_seeds(1337)
