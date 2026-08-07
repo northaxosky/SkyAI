@@ -10,9 +10,9 @@ This is the last prereq. After this: SkyAI Phase 1.
 
 ## Concepts I had to internalize
 
-- **UTF-8 as the universal byte-level vocabulary.** Every Unicode codepoint encodes to 1-4 bytes in UTF-8. By starting BPE on raw bytes (vocab = 0..255), we get coverage of every possible string for free — no Unicode handling needed. Inefficient at first (every emoji is 4 tokens), but BPE merges fix that quickly.
+- **UTF-8 as the universal byte-level vocabulary.** Every Unicode codepoint encodes to 1-4 bytes in UTF-8. By starting BPE on raw bytes (vocab = 0..255), we get coverage of every possible string for free, with no Unicode handling needed. Inefficient at first (every emoji is 4 tokens), but BPE merges fix that quickly.
 - **BPE = greedy pair-merging.** Find the most common adjacent (token_a, token_b) pair, replace every occurrence with a new token id, repeat. Each merge adds one entry to the vocab. The list of merges (ordered) IS the tokenizer.
-- **The merges dict is everything.** `{(p0, p1) -> new_token_id}` stores the training output. Inverting it gives you decode; greedily replaying it (earliest merges first) gives you encode. No model, no learning rate, no gradients — just dictionary lookups.
+- **The merges dict is everything.** `{(p0, p1) -> new_token_id}` stores the training output. Inverting it gives you decode; greedily replaying it (earliest merges first) gives you encode. No model, no learning rate, no gradients. Just dictionary lookups.
 - **Encode picks the EARLIEST applicable merge, not the most common.** When applying the trained tokenizer to a new string, you replay merges in the order they were learned. `min(stats, key=lambda p: merges.get(p, +inf))` finds the pair with the lowest merge index (= learned earliest). This is the deterministic counterpart of the greedy "most common" training step.
 - **Pre-tokenization via regex (GPT-2's contribution).** Before BPE, GPT-2 splits text into chunks using a regex like `r"'s|'t|'re| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"`. This prevents merging across logical boundaries (e.g. "the" + "," never becomes a single token). BPE then only merges WITHIN each chunk.
 - **GPT-2 vs GPT-4 tokenizer differences.** GPT-4's `cl100k_base` merges consecutive whitespace into single tokens; GPT-2 doesn't. Different vocab sizes (50,257 vs ~100,000). Different regex patterns. These design changes reflect lessons learned (code with indentation tokenizes way better in GPT-4).
@@ -33,7 +33,7 @@ This is the last prereq. After this: SkyAI Phase 1.
 ## What I should be doing differently
 
 - **Use `tiktoken` for anything production-y. Never write your own tokenizer unless that IS the project.** For SkyAI, `tiktoken.get_encoding("gpt2")` gives you GPT-2's exact tokenizer (50,257 vocab). Zero work, identical to what HuggingFace's GPT-2 uses.
-- **Always `import regex as re`, not `import re`, when working with text patterns.** The stdlib's lack of Unicode property escapes (`\p{L}`, `\p{N}`) bites silently — patterns "work" but match nothing.
+- **Always `import regex as re`, not `import re`, when working with text patterns.** The stdlib's lack of Unicode property escapes (`\p{L}`, `\p{N}`) bites silently. Patterns "work" but match nothing.
 - **Test encoding + decoding roundtrip on edge cases.** Emojis, multi-byte chars, repeated whitespace, code with mixed indentation. `encode(decode(tokens)) == tokens` should hold for any valid token sequence; if it doesn't, your tokenizer is broken.
 - **When debugging tokenization, print BOTH the byte view AND the decoded string view.** Two interpretations of the same data; comparing them catches off-by-one and encoding errors fast.
 - **Don't customize tokenization unless you have a strong reason.** The marginal gains from a "better" custom tokenizer rarely justify the ecosystem fragmentation (no shared pretrained models, no shared embeddings, every downstream tool needs your custom code).
@@ -44,7 +44,7 @@ This is the last prereq. After this: SkyAI Phase 1.
 
 A: Yes, conceptually, but it would be barking up the wrong tree. The honest version:
 
-- **For programming languages**: The reason GPT-2 was bad at Python wasn't that Python is poorly designed for LLMs — it was that GPT-2's tokenizer didn't handle indentation well. GPT-4 fixed this by retraining the tokenizer with more code in the corpus and learning whitespace merges. Python is *fine* for LLMs; the tokenizer was the problem. So the optimization target was the tokenizer, not the language.
+- **For programming languages**: The reason GPT-2 was bad at Python wasn't that Python is poorly designed for LLMs. It was that GPT-2's tokenizer didn't handle indentation well. GPT-4 fixed this by retraining the tokenizer with more code in the corpus and learning whitespace merges. Python is *fine* for LLMs; the tokenizer was the problem. So the optimization target was the tokenizer, not the language.
 - **Could you design a maximally-tokenizer-friendly language?** Yes. Common features would include: no significant whitespace, consistent syntax (every statement starts the same way), uniform identifier conventions, no ambiguous operators. But this would also be a worse language for humans, and we have ~50 years of programming language evolution that says optimizing for the wrong reader (humans, not tokenizers) is the design choice that matters.
 - **For human languages**: tokenizers handle major languages pretty well after training. Where they struggle is low-resource languages (e.g. Swahili, Tagalog) that didn't get enough training data. The "fix" is more multilingual training data, not a new language.
 - **The actual trend**: away from tokenizers entirely. Research on **byte-level models** (e.g. ByT5, MegaByte, recent Mamba variants) skips BPE and operates on raw bytes. The model has more capacity to spend but the brittleness of tokenization disappears. Not yet competitive with tokenized models at frontier scale, but trending.
@@ -73,15 +73,15 @@ For a frontier model (~100B+ params), the embedding/output cost is a small fract
 
 For SkyAI: don't tune this. Use `tiktoken.get_encoding("gpt2")` (50,257 tokens) and inherit GPT-2's choice. The whole point of "reproducing GPT-2" is matching its setup.
 
-**Q: tiktoken is written in Rust — what makes it different from a pure-Python BPE?**
+**Q: tiktoken is written in Rust: what makes it different from a pure-Python BPE?**
 
 A: Speed. Tokenization is CPU-bound, sequential per-token, and embarrassingly parallel across documents. Pure-Python BPE has Python interpreter overhead on every character lookup; Rust eliminates that overhead and uses optimized data structures.
 
 Concrete numbers: a pure-Python BPE tokenizer might tokenize ~100k tokens/sec. `tiktoken` does ~5-10 million tokens/sec. ~50-100x faster. At training scale (10 billion tokens through the tokenizer), this is the difference between "tokenization takes 30 hours" and "tokenization takes 20 minutes".
 
-HuggingFace's `tokenizers` library is also Rust for the same reason. The Python wrapper is via PyO3 (Rust ↔ Python bindings). Both libraries are great examples of "tight inner loops belong in Rust, glue belongs in Python".
+HuggingFace's `tokenizers` library is also Rust for the same reason. The Python wrapper is via PyO3 (Rust <-> Python bindings). Both libraries are great examples of "tight inner loops belong in Rust, glue belongs in Python".
 
-When you scope a Rust agent later, this is a model to study — same pattern: Rust for performance-critical work, Python (or just CLI invocation) for orchestration.
+When you scope a Rust agent later, this is a model to study. Same pattern: Rust for performance-critical work, Python (or just CLI invocation) for orchestration.
 
 **Q: Is "training a model for code" actually just training the tokenizer better? Could you get more performance from the same params by focusing scope?**
 
@@ -91,7 +91,7 @@ A: No, the tokenizer is a small part of it. The main levers are:
 2. **Fine-tuning.** After pretraining, the model is often further tuned on a specialized dataset (instruction-tuning data, code completion data, RLHF data). Same weights initially; very different post-training.
 3. **Tokenizer can help but usually doesn't dominate.** A code-optimized tokenizer (e.g. one that handles whitespace well) gives ~10-20% improvement on code tasks. A code-heavy training corpus gives ~5-10x improvement on code tasks. Order of magnitude difference.
 
-**To your "focused training" question**: yes, narrow scope helps for the same params. Code-specialized models with 7B params often outperform general 70B models on code-only benchmarks. But the cost is generality — they're bad at everything else. This is exactly why we have CodeLlama, StarCoder, DeepSeek-Coder, etc., alongside the general models.
+**To your "focused training" question**: yes, narrow scope helps for the same params. Code-specialized models with 7B params often outperform general 70B models on code-only benchmarks. But the cost is generality: they're bad at everything else. This is exactly why we have CodeLlama, StarCoder, DeepSeek-Coder, etc., alongside the general models.
 
 The frontier strategy today: train one huge general model, then distill/fine-tune specialized variants from it. You get the data diversity of general training AND the focused quality of specialized fine-tuning. That's roughly what "GPT-4o code", "Claude code", and "Gemini code" all do.
 
@@ -105,4 +105,4 @@ A: Several reasons stacked:
 4. **The tokenizer is also a competitive moat.** It encodes lab-specific decisions (special tokens for tools, RLHF formats, etc.) that competitors would have to replicate.
 5. **Ecosystem inertia.** GPT-2's tokenizer (BPE on bytes with regex pre-tokenization) became the de-facto standard because so much downstream tooling was built around it. Llama's SentencePiece is mostly compatible. New tokenizers face a high adoption bar.
 
-The "ideal" tokenizer for any specific use case can be designed; the universal one can't, because the requirements genuinely conflict. The long-term answer might just be eliminating tokenization (byte-level models) — but that's still a research bet.
+The "ideal" tokenizer for any specific use case can be designed; the universal one can't, because the requirements genuinely conflict. The long-term answer might just be eliminating tokenization (byte-level models), but that's still a research bet.

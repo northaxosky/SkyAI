@@ -17,7 +17,7 @@ Also the first prereq where I dropped Jupyter for actual `.py` files. Workflow s
 - **Position embeddings (learned).** `nn.Embedding(block_size, n_embd)`, indexed by token position. Just another lookup table. Sinusoidal encodings (the original transformer paper) work too but learned wins in practice.
 - **Dropout.** Randomly zero out activations during training; do nothing during eval. The `model.eval()` switch is what makes the difference, so you have to remember to call it before sampling.
 - **The bigram baseline vs the full transformer.** Karpathy starts with a pure bigram model (just an embedding table) at ~2.5 loss, then iteratively adds attention, residuals, LayerNorm, and dropout. Each piece moves the dev loss down by ~0.2-0.4. This is a great mental model for "what does each transformer component buy you".
-- **The `if __name__ == '__main__':` guard.** Lets a Python file double as both a runnable script and an importable module. Run it directly → trains. Import it from elsewhere → just exposes the class definitions, no training. Pattern is everywhere in real ML codebases.
+- **The `if __name__ == '__main__':` guard.** Lets a Python file double as both a runnable script and an importable module. Run it directly -> trains. Import it from elsewhere -> just exposes the class definitions, no training. Pattern is everywhere in real ML codebases.
 - **Checkpoint save/load via `torch.save` + `state_dict`.** State dicts are the standard way to serialize a model's parameters (not the full Python object). `torch.save({'model_state': model.state_dict(), 'vocab_size': ..., 'stoi': ...}, path)` is the typical pattern. To load: instantiate the model, then `model.load_state_dict(ckpt['model_state'])`.
 
 ## What surprised me
@@ -58,11 +58,11 @@ What's neat: different attention heads end up specializing in different relation
 
 Nobody tells the model what to look for. The objective (next-token prediction) is the only signal. **This is the wild part of training transformers**: the attention patterns that emerge are interpretable and often map onto human concepts that nobody designed in.
 
-**Q: Color-coded tensor visualization — does that exist?**
+**Q: Color-coded tensor visualization: does that exist?**
 
 A: Yes! Several existing tools and a few quick recipes:
 
-- **BertViz** (https://github.com/jessevig/bertviz) — the canonical attention-visualization tool for transformers. Renders attention weights as heatmaps, head-by-head, layer-by-layer. Open it in a Jupyter notebook with `from bertviz import model_view; model_view(model, ...)`. Works on any HuggingFace-compatible model.
+- **BertViz** (https://github.com/jessevig/bertviz), the canonical attention-visualization tool for transformers. Renders attention weights as heatmaps, head-by-head, layer-by-layer. Open it in a Jupyter notebook with `from bertviz import model_view; model_view(model, ...)`. Works on any HuggingFace-compatible model.
 - **`plt.imshow(weights, cmap='Blues')` for any 2D tensor.** Drop it in a notebook cell after computing attention weights:
   ```python
   import matplotlib.pyplot as plt
@@ -82,7 +82,7 @@ The query at position 5 is essentially asking *"give me anything in my past that
 
 The learning isn't given the rule explicitly; the cross-entropy loss on next-character prediction implicitly pushes the projections toward whatever patterns help predict accurately. Vowel-tracking happens to be one such useful pattern.
 
-**Q: Debugging at 1B+ scale — how is it even possible?**
+**Q: Debugging at 1B+ scale: how is it even possible?**
 
 A: It's hard, and there's a structured approach. The standard practice:
 
@@ -101,7 +101,7 @@ A: Great question, and the "ensemble of subnets" framing is useful but a bit mis
 
 During training:
 - Each forward pass randomly zeros out a fraction of neurons (say 20%).
-- The remaining neurons have to handle the loss alone — they can't rely on any single neuron being present.
+- The remaining neurons have to handle the loss alone. They can't rely on any single neuron being present.
 - This *forces* the network to learn redundant, distributed representations. Multiple neurons end up encoding similar features so no single one is critical.
 
 At inference:

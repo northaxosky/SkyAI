@@ -5,7 +5,7 @@ Two decoder language models built by hand: a faithful **gpt2 (124M)** and a mode
 harness. Every layer, every optimizer step, and every tokenizer decision is written here,
 not imported.
 
-> **Both models are trained and published.** On 10B FineWeb-Edu tokens at matched scale, the
+> **🤗 Both models are trained and published.** On 10B FineWeb-Edu tokens at matched scale, the
 > modern stack wins on likelihood: **val_loss 2.9548 vs 2.9653** and **LAMBADA perplexity
 > 26.25 vs 27.81**, at **~8% fewer FLOPs/token**. On accuracy benchmarks the two are tied.
 > Both runs are single-seed, and the architecture changed as a bundle. The
@@ -52,14 +52,13 @@ Newton-Schulz orthogonalized momentum to the 2D matrices; AdamW handles the embe
 norms, and biases. The LR anneals to zero over the final 40%.
 
 The canonical Muon learning rates diverge on this architecture, because it ties the
-embeddings and uses LayerNorm and biases. They had to be re-tuned down. On 8xA100, about
-2.1h over 10B FineWeb-Edu tokens:
+embeddings and uses LayerNorm and biases. They had to be re-tuned down. On 8×A100, about 2.1h over 10B FineWeb-Edu tokens:
 
 | metric | **gpt2-muon** | GPT-2 124M | nanoGPT / llm.c (AdamW) |
 |---|---|---|---|
 | val_loss (FineWeb-Edu val shard) | **2.9653** | ~3.29 | 3.28 |
 | HellaSwag (acc_norm) | **0.3238** | 0.294 | ~0.30 |
-| LAMBADA (ppl) | **27.81** | ~35 | - |
+| LAMBADA (ppl) | **27.81** | ~35 | n/a |
 
 Three notes on that table:
 
@@ -131,8 +130,8 @@ Two things this result is **not**:
 ### A measurement bug, and the correction
 
 The first version of this comparison was wrong. `eval.val_steps` counted *micro-batches*
-rather than tokens, so the validation budget scaled with `batch_size x world_size`. gpt2-muon
-(B=64, 8 GPUs) scored 10.5M val tokens. skyai (B=32, 4 GPUs) scored only 2.6M, a 4x smaller
+rather than tokens, so the validation budget scaled with `batch_size × world_size`. gpt2-muon
+(B=64, 8 GPUs) scored 10.5M val tokens. skyai (B=32, 4 GPUs) scored only 2.6M, a 4× smaller
 prefix of the same shard. Two numbers that looked comparable were not.
 
 Re-scoring both checkpoints on identical windows fixes it. The harness reproduces each run's
@@ -170,7 +169,7 @@ reports compute capability 9, and falls back to PyTorch SDPA otherwise. The fast
 Hopper-only, so it cannot run on the 4090 used for local work. FA3 was built from source for
 `sm_90a` on the H100 box and was active for the whole skyai run.
 
-Then it was measured, and it did not matter: **1.03x on the attention op alone, and ~0%
+Then it was measured, and it did not matter: **1.03× on the attention op alone, and ~0%
 end-to-end.** At 1024 context with head_dim 64, attention is about 1% of total FLOPs, or
 0.89 ms of a 76 ms step. The MLP and the output head dominate. FA3's advantage grows with
 sequence length, and this configuration is too short to show it.
@@ -192,10 +191,10 @@ tokenizer = AutoTokenizer.from_pretrained("muteptr/skyai-modern-xs")
 ```
 
 [`scripts/export_skyai_hf.py`](./scripts/export_skyai_hf.py) does the export. It checks that
-the ported model reproduces the harness logits exactly (max absolute difference 0.0) before
+the ported model reproduces the harness logits exactly (max |Δ| = 0.0) before
 it publishes anything.
 
-[`configs/skyai-xl.yaml`](./configs/skyai-xl.yaml) stages a ~1.5B run for 8xH100: 48 layers,
+[`configs/skyai-xl.yaml`](./configs/skyai-xl.yaml) stages a ~1.5B run for 8×H100: 48 layers,
 1536 hidden, 32 heads, 8 KV heads, 2048 context, cl100k. It is parked, not run.
 
 ## The harness
@@ -234,7 +233,7 @@ checkpoints/    saved models (gitignored)
 ## Hardware
 
 Local development is one NVIDIA RTX 4090 (24GB), 64GB RAM, on WSL Ubuntu. Cloud runs were
-8xA100 for gpt2-muon and 4xH100 for skyai, both on Lambda. skyai-xl is staged for 8xH100.
+8×A100 for gpt2-muon and 4×H100 for skyai, both on Lambda. skyai-xl is staged for 8×H100.
 bf16, Flash Attention, and `torch.compile` are all in use. `torch.compile` needs Linux,
 because Triton has no Windows wheels.
 
@@ -321,9 +320,9 @@ and `tests/test_golden_gpt2.py`), so a numerical change during a refactor breaks
 ```bash
 uv run python scripts/shard_text.py                    # data, once (~19GB)
 
-# rung 2: 8xA100, ~2.1h, ~$24
+# rung 2: 8×A100, ~2.1h, ~$24
 uv run torchrun --standalone --nproc_per_node=8 -m harness.cli.main train --config configs/gpt2-muon.yaml
-# rung 3: 4xH100, ~2h33m, ~$35
+# rung 3: 4×H100, ~2h33m, ~$35
 uv run torchrun --standalone --nproc_per_node=4 -m harness.cli.main train --config configs/skyai.yaml
 
 uv run python scripts/compare_val_loss.py              # matched-protocol paired re-score
@@ -347,7 +346,7 @@ uv run skyai eval --config configs/skyai.yaml --checkpoint checkpoints/skyai/bes
   dimensional-analysis bug, not a coding one.
 - **Knowing which bugs invalidate a result, and which do not.** An audit found that Muon's
   second-moment debias used `1 - beta2` instead of `1 - beta2**t`, which inflated the
-  effective learning rate 3.16x once the EMA warmed up. Real bug, now fixed. But it was
+  effective learning rate 3.16× once the EMA warmed up. Real bug, now fixed. But it was
   *symmetric* across both runs, so the comparison between them still holds. The val-budget
   bug above was the opposite case: asymmetric, and disqualifying until corrected.
 - **Measuring the thing you claim.** FA3 was integrated, verified, and then measured to be

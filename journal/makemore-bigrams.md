@@ -34,7 +34,7 @@ A: The rule: align shapes from the right. At each position, the dimensions must 
 
 - `(3, 4) + (4,)` aligns right as `(3, 4)` and `(_, 4)`. Matches. The `(4,)` virtually expands to `(3, 4)`. Result: `(3, 4)`.
 - `(3, 4) + (3,)` aligns right as `(3, 4)` and `(_, 3)`. 4 vs 3 mismatch, error.
-- `(3, 1) + (1, 3)` both expand to `(3, 3)`. Famous bug source: when you wanted `(3, 1) + (3,) → (3,)` but accidentally wrote `(1, 3)` for the second operand.
+- `(3, 1) + (1, 3)` both expand to `(3, 3)`. Famous bug source: when you wanted `(3, 1) + (3,) -> (3,)` but accidentally wrote `(1, 3)` for the second operand.
 
 The thing to watch for: broadcasting is silent. PyTorch will not warn you when shapes virtually expand, even if the expansion was not what you intended. And python being python will also not throw an explicit error, instead you will get a logic error deep down the road when your net turns out to be lobotomized.
 

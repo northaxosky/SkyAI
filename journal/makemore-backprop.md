@@ -8,7 +8,7 @@ The same MLP from the activations video, but with the autograd training wheels o
 
 - **Multivariate chain rule.** When a forward variable feeds *multiple* downstream consumers (e.g. `bndiff` is used to compute both `bndiff2` and `bnraw`), its gradient is the **sum** of contributions from every path. Missing one path produces a "close but wrong" answer (small nonzero `maxdiff`) which is the hardest kind of bug to catch.
 - **`retain_grad()` for non-leaf tensors.** PyTorch only populates `.grad` on leaf tensors (parameters) by default. To `cmp` your manual gradient against autograd's for an intermediate variable, you have to explicitly call `retain_grad()` on it before `loss.backward()`. Forgetting one retain_grad gives a confusing warning + bogus comparison.
-- **Exact vs Approximate equality.** Bit-identical results across two different orderings of floating-point operations are rare. If your manual gradient matches autograd's *up to* `maxdiff ~ 1e-9`, that's success — the small noise is from the math being computed in a slightly different order. Anything larger (e.g. `1e-3` or higher) is a real derivation bug.
+- **Exact vs Approximate equality.** Bit-identical results across two different orderings of floating-point operations are rare. If your manual gradient matches autograd's *up to* `maxdiff ~ 1e-9`, that's success, the small noise is from the math being computed in a slightly different order. Anything larger (e.g. `1e-3` or higher) is a real derivation bug.
 - **Cross-entropy backward in one expression.** Instead of going through `logprobs -> probs -> counts -> norm_logits -> logits` step by step, the algebra collapses to: `dlogits = softmax(logits) - one_hot(targets)`, divided by batch size. Cleaner, faster, and what `F.cross_entropy` does internally.
 - **BatchNorm backward in one expression.** The full BN backward (going through `bnmeani`, `bndiff`, `bndiff2`, `bnvar`, `bnvar_inv`, `bnraw`) collapses into a single formula for `dhidden_prebn`. Same trick: derive the math once, skip all the intermediate scratch variables.
 - **Training with autograd disabled.** `with torch.no_grad():` shuts off autograd entirely (no graph built, no `.grad` populated). The whole training loop becomes "compute forward values, compute manual gradients, update parameters by hand". Matches autograd training behavior if and only if the manual derivations are correct.
@@ -30,7 +30,7 @@ The same MLP from the activations video, but with the autograd training wheels o
 - **Use the simplified one-go forms for cross-entropy and batchnorm in real code.** Even when autograd is doing the work, the closed-form is faster (fewer intermediate tensors allocated) and numerically more stable. PyTorch's `F.cross_entropy` and `nn.BatchNorm1d` already use these internally.
 - **Always copy the BatchNorm transform from training to inference.** The most common ML production bug: training-time BN normalizes per batch, inference can't. You need stored running mean/std (or end-of-training calibration) and the same BN line in your sampling forward pass.
 - **When samples look weird but loss looks fine, the bug is almost always in the inference forward pass.** Loss is computed during training where everything is correct; samples are generated separately, often with a slightly different code path that's easy to get wrong.
-- **Restart kernel + run all when state feels wrong.** Stale `.grad` values, stale `bnvar` from the last training batch, stale variable bindings — Jupyter accumulates these and they're invisible until they bite. Restart-and-run-all is the seatbelt.
+- **Restart kernel + run all when state feels wrong.** Stale `.grad` values, stale `bnvar` from the last training batch, stale variable bindings, Jupyter accumulates these and they're invisible until they bite. Restart-and-run-all is the seatbelt.
 
 ## Open questions
 
@@ -43,7 +43,7 @@ A: No, it's a known quirk that's not really a bug. Two pieces:
 
 Karpathy's notebook uses `unbiased=True` because it's matching against the autograd of the explicit per-step formula (which uses `bndiff2.sum() / (n-1)`). When comparing against `nn.BatchNorm1d`'s output, you'd want `unbiased=False` to match exactly.
 
-The numerical difference is `n / (n-1)` on the variance, which approaches 1 as batch size grows. At batch size 32, that's `32/31 = 1.032` — about 3% off. Negligible for training loss; would only matter in extreme edge cases. Most production code uses `nn.BatchNorm1d` and never thinks about it.
+The numerical difference is `n / (n-1)` on the variance, which approaches 1 as batch size grows. At batch size 32, that's `32/31 = 1.032`, about 3% off. Negligible for training loss; would only matter in extreme edge cases. Most production code uses `nn.BatchNorm1d` and never thinks about it.
 
 **Q: Does PyTorch store backwards() internally like micrograd does?**
 
@@ -84,4 +84,4 @@ The alternatives:
 - **Reverse-mode autograd** (what PyTorch uses): build the computation graph during forward, traverse it in reverse during backward. Efficient when there are many inputs (parameters) and one output (loss). The right tradeoff for deep learning.
 - **Tracing-based JIT differentiation**: trace the function once, then differentiate the trace symbolically. JAX uses this. More elegant for math-heavy code, less elegant for dynamic control flow.
 
-So when you wonder "why doesn't PyTorch just take my function and differentiate it like calculus" — that's symbolic differentiation, and it doesn't scale to functions with loops, conditionals, and millions of parameters. Reverse-mode autograd on a per-op basis is the engineering compromise that actually works at scale. JAX is the modern attempt to combine the elegance of symbolic differentiation with the practicality of operator-level autograd, but PyTorch's per-op approach is what dominates in industry.
+So when you wonder "why doesn't PyTorch just take my function and differentiate it like calculus", that's symbolic differentiation, and it doesn't scale to functions with loops, conditionals, and millions of parameters. Reverse-mode autograd on a per-op basis is the engineering compromise that actually works at scale. JAX is the modern attempt to combine the elegance of symbolic differentiation with the practicality of operator-level autograd, but PyTorch's per-op approach is what dominates in industry.

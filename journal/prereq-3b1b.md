@@ -30,7 +30,7 @@ Foundation. No code yet, just watching Grant Sanderson's *"Neural Networks"* pla
 A: The core operation is **scaled dot-product self-attention**:
 
 1. For each token, compute three vectors: query (Q), key (K), value (V). These are just three different linear projections of the token's embedding.
-2. For every pair of tokens (i, j), compute `Q_i · K_j` as the "score" of how much token i should pay attention to token j.
+2. For every pair of tokens (i, j), compute `Q_i * K_j` as the "score" of how much token i should pay attention to token j.
 3. Scale by `1/sqrt(d_k)` (just to keep variance reasonable) and softmax across j to turn the scores into a probability distribution.
 4. Each token's new representation is a weighted average of all the V vectors, weighted by those attention probabilities.
 

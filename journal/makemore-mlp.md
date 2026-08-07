@@ -56,16 +56,16 @@ A: This is one of the most important questions in ML and worth getting clear on 
 
 **What loss means in absolute terms:** cross-entropy loss has a concrete interpretation. A loss of `L` means the model assigns probability `e^(-L)` to the correct next character on average. So:
 
-- Loss 3.30 ≈ probability 1/27 ≈ uniform random guessing (you've learned nothing)
-- Loss 2.46 ≈ probability 0.085 ≈ the bigram baseline (what counting alone gets you)
-- Loss 2.17 ≈ probability 0.114 ≈ what your MLP achieves
+- Loss 3.30 ~ probability 1/27 ~ uniform random guessing (you've learned nothing)
+- Loss 2.46 ~ probability 0.085 ~ the bigram baseline (what counting alone gets you)
+- Loss 2.17 ~ probability 0.114 ~ what your MLP achieves
 - Loss 0.00 = probability 1.0 = perfect prediction
 
 **Why 0 is bad:** the model can ONLY achieve 0 loss on the training set if it has memorized every example. That memorization doesn't generalize. The dev loss will be high while the train loss is 0, which is the textbook signature of overfitting. The model has learned the training data, not the underlying pattern.
 
 **Why "loss only went down a little" can be good:** what matters isn't the absolute drop but where you ended up:
 
-- Going from 2.46 → 2.17 doesn't sound like much, but it's a 30% increase in average probability assigned to the correct character. That's a real improvement in modeling ability.
+- Going from 2.46 -> 2.17 doesn't sound like much, but it's a 30% increase in average probability assigned to the correct character. That's a real improvement in modeling ability.
 - More importantly, train loss and dev loss should track each other. If train drops to 1.5 and dev stays at 2.5, you're overfitting. If both drop to 2.17, you're learning the actual structure.
 
 **How we actually measure success:** the standard approach is:

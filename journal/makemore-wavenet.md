@@ -2,16 +2,16 @@
 
 ## What I'm building
 
-Two things at once. **(1) Refactor**: rewrite the makemore codebase as a stack of PyTorch-style module classes (`Linear`, `BatchNorm1d`, `Tanh`, `Embedding`, `FlattenConsecutive`, `Sequential`) that mirror how real PyTorch code is structured. **(2) New architecture**: instead of flattening the whole context at the input, build a WaveNet-style hierarchy where consecutive character embeddings are paired layer by layer (8 chars → 4 pairs → 2 pairs-of-pairs → 1 root). The tree structure lets the model build up context gradually and use parameters more efficiently. Context bumped from 3 to 8 chars, and with tuned hyperparameters (`n_embed=24`, `n_hidden=128`) the dev loss drops to **~1.99** — the first time in the series it breaks below 2.0.
+Two things at once. **(1) Refactor**: rewrite the makemore codebase as a stack of PyTorch-style module classes (`Linear`, `BatchNorm1d`, `Tanh`, `Embedding`, `FlattenConsecutive`, `Sequential`) that mirror how real PyTorch code is structured. **(2) New architecture**: instead of flattening the whole context at the input, build a WaveNet-style hierarchy where consecutive character embeddings are paired layer by layer (8 chars -> 4 pairs -> 2 pairs-of-pairs -> 1 root). The tree structure lets the model build up context gradually and use parameters more efficiently. Context bumped from 3 to 8 chars, and with tuned hyperparameters (`n_embed=24`, `n_hidden=128`) the dev loss drops to **~1.99**. That is the first time in the series it breaks below 2.0.
 
 ## Concepts I had to internalize
 
 - **PyTorch-style module pattern.** Every layer class has the same shape: `__init__` stores parameters, `__call__` runs the forward and saves output to `self.out`, `parameters()` returns the list of trainable tensors. This is essentially `torch.nn.Module` rebuilt from scratch in ~10 lines per class.
 - **The `self.out` attribute pattern.** Each layer stashes its forward output on itself so downstream inspection code (`for layer in model.layers: print(layer.out.shape)`) works without any extra plumbing. Real `nn.Module` does the same thing via forward hooks; this is the simpler version.
 - **`Sequential` as a chain of `__call__`s.** Forward pass walks the list of layers calling each one on the previous output. `Sequential.parameters()` flattens parameters from all sub-layers so the optimizer sees a single flat list. Same API as `torch.nn.Sequential`.
-- **`FlattenConsecutive(n)`.** Given `(B, T, C)`, reshape to `(B, T//n, C*n)`. This "fuses" n consecutive timesteps into a single timestep with n times the channels. With `n=2`, repeated application builds the wavenet binary tree: `(B, 8, C) → (B, 4, 2C) → (B, 2, 4C) → (B, 1, 8C)`.
+- **`FlattenConsecutive(n)`.** Given `(B, T, C)`, reshape to `(B, T//n, C*n)`. This "fuses" n consecutive timesteps into a single timestep with n times the channels. With `n=2`, repeated application builds the wavenet binary tree: `(B, 8, C) -> (B, 4, 2C) -> (B, 2, 4C) -> (B, 1, 8C)`.
 - **Hierarchical processing > flat processing for sequences.** A vanilla MLP at block_size=8 has to digest all 8 chars at once in the first hidden layer. The wavenet splits this up: pairs of adjacent chars first, then pairs of pairs, etc. Better inductive bias for sequence data, fewer parameters needed.
-- **BatchNorm1d on 3D tensors.** With 2D input `(B, C)`, you reduce over `dim=0` for stats. With 3D input `(B, T, C)`, you reduce over `dim=(0, 1)` — both batch and time get averaged for the per-feature mean/std. Per-feature running stats still have shape `(C,)`. The class needs to dispatch on `x.ndim` to pick the right reduction dim, which is exactly what Karpathy adds in this video. Subtle but important: forgetting to handle T correctly silently produces wrong gradients.
+- **BatchNorm1d on 3D tensors.** With 2D input `(B, C)`, you reduce over `dim=0` for stats. With 3D input `(B, T, C)`, you reduce over `dim=(0, 1)`: both batch and time get averaged for the per-feature mean/std. Per-feature running stats still have shape `(C,)`. The class needs to dispatch on `x.ndim` to pick the right reduction dim, which is exactly what Karpathy adds in this video. Subtle but important: forgetting to handle T correctly silently produces wrong gradients.
 - **Training mode vs eval mode for BatchNorm.** During training, BN uses per-batch mean/std. During eval (sampling, val loss computation), BN uses the running_mean / running_var EMA tracked during training. The `for layer in model.layers: layer.training = False` cell is what flips the switch. Forgetting it gives the BatchNorm-at-inference bug.
 
 ## What surprised me
@@ -49,7 +49,7 @@ For *real* LLMs, the answer is much higher because the task is harder:
 
 The "right" context length depends on the typical *meaningful dependency length* in your data: how many tokens back does information you need to predict the next token typically live? For names, ~7. For news articles, ~500. For code with cross-file dependencies, 10k+. For long conversations with memory, 100k+.
 
-Going past the meaningful dependency length wastes compute (attention is O(n²) in context length) but doesn't really hurt accuracy until you hit overfitting. The compute cost is usually what stops you, not loss degradation.
+Going past the meaningful dependency length wastes compute (attention is O(n^2) in context length) but doesn't really hurt accuracy until you hit overfitting. The compute cost is usually what stops you, not loss degradation.
 
 **Q: Is being good at PyTorch the #1 ML skill?**
 
@@ -108,4 +108,4 @@ For SkyAI specifically, we'll build a lightweight version of (1)-(4) during Phas
 
 We don't need cluster orchestration. The 4090 is one machine and Lambda 8xA100 is one cloud machine; orchestration is overkill at that scale. But the muscle memory of "configure, run, log, compare" transfers directly to any larger setup.
 
-This is genuinely a high-value skill — most ML practitioners are mediocre at this. Getting good at experiment management is what separates "I trained a model" from "I systematically explored a model's design space and made principled choices".
+This is genuinely a high-value skill. Most ML practitioners are mediocre at this. Getting good at experiment management is what separates "I trained a model" from "I systematically explored a model's design space and made principled choices".
