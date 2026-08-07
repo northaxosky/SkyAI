@@ -27,10 +27,10 @@ Eval sets: 10,042 HellaSwag examples, 5,153 LAMBADA, 97,656 val sequences of 102
 HellaSwag uses Karpathy's exact method (acc = argmin of summed completion loss; acc_norm =
 argmin of length-normalized loss). LAMBADA scores at a hardcoded `block_size=1024`.
 
-**Every likelihood metric favors skyai. Every accuracy metric is null.** val_loss and
-LAMBADA perplexity both move; HellaSwag acc/acc_norm and LAMBADA accuracy stay within
-+/-0.55 SE. The modern stack gives better-calibrated probabilities. It does not measurably
-change task accuracy at this scale.
+**Every likelihood metric favors skyai; every accuracy metric is null.** val_loss and
+LAMBADA perplexity both move, while HellaSwag acc/acc_norm and LAMBADA accuracy all sit
+within +/-0.55 SE. Read that as better-calibrated probabilities without a measurable change
+in task accuracy at this scale.
 
 ### val_loss is precisely measured
 
@@ -41,8 +41,8 @@ Paired per-sequence comparison over the full val shard (97,656 sequences):
 - skyai lower on **65.4%** of sequences
 - **190 of 190 disjoint blocks favor skyai** (per-block range +0.0071 ... +0.0151)
 
-This measures the difference between *these two checkpoints on this data*. It does **not**
-measure run-to-run uncertainty. See caveat 1.
+All of that measures the difference between *these two checkpoints on this data*, which is
+not the same thing as run-to-run uncertainty. See caveat 1.
 
 ### val_loss trajectory (WSD decay begins step 11,444)
 
@@ -53,9 +53,9 @@ measure run-to-run uncertainty. See caveat 1.
 | 7.9B | 15,000 | 3.1185 | 3.123 |
 | 10B | 19,072 (final) | 2.9810 | 2.989 |
 
-*(In-run protocol, shape only. See below.)* The lead appears by step 5,000 and stays roughly
-constant. It does not widen during decay. As with gpt2-muon, the decay phase drives the
-steepest descent.
+*(In-run protocol, shape only. See below.)* The lead shows up by step 5,000 and stays roughly
+flat from there, so it never opens up during decay. As with gpt2-muon, the decay phase is
+where the steepest descent happens.
 
 ## Measurement protocol (and a correction)
 
@@ -79,11 +79,12 @@ validates the measurement path):
 | **97,656 seq (full shard)** | **2.9653** | **2.9548** | **+0.0104** |
 | *as originally logged* | 2.9891 | 2.9810 | +0.0082 |
 
-The asymmetry biased **against** skyai. The honest gap is +0.0104, not the +0.0082 in the raw
-logs. Always quote the full-shard figure with its protocol.
+The asymmetry biased **against** skyai, so the honest gap is +0.0104 rather than the +0.0082
+the raw logs imply. Always quote the full-shard figure with its protocol attached.
 
-Absolute val_loss is protocol-sensitive. The same skyai checkpoint reads 2.9810 on 2.6M tokens
-and 2.9548 on 100M. Comparisons to outside numbers like "3.28" are looser than they look.
+Absolute val_loss is protocol-sensitive enough to matter: the same skyai checkpoint reads
+2.9810 on 2.6M tokens and 2.9548 on 100M. That makes comparisons to outside numbers like
+"3.28" looser than they look.
 
 ## Scale is matched; parameters are not
 
@@ -96,10 +97,10 @@ and 2.9548 on 100M. Comparisons to outside numbers like "3.28" are looser than t
 Matched: depth (12), width (768), heads (12), context (1024), tokenizer (gpt2 BPE), dataset,
 token budget (10B), batch (524,288 tokens/step), and schedule shape.
 
-**Never call this "parameter-matched."** The +27.1M parameters are all untied output
-embedding, and they cost zero FLOPs. The -21.2 MFLOP/token is all GQA: the SwiGLU MLP is
-FLOP-identical to the 4x GELU MLP at 9,437,184 FLOPs/token/layer, because the 8/3 scaling
-lands exactly. FLOPs/token is the fairest single axis, and it favors skyai.
+**Never call this "parameter-matched."** Every one of those +27.1M parameters is untied
+output embedding, costing zero FLOPs, and the whole -21.2 MFLOP/token comes from GQA. The
+SwiGLU MLP is FLOP-identical to the 4x GELU MLP at 9,437,184 FLOPs/token/layer, since the 8/3
+scaling lands exactly. FLOPs/token is the fairest single axis here, and it favors skyai.
 
 ## How to state the finding (defensible)
 
@@ -175,11 +176,11 @@ lands exactly. FLOPs/token is the fairest single axis, and it favors skyai.
 | gpt2-muon (**recipe**) | 2.989 | +0.291 | vs literature |
 | skyai (**architecture**) | 2.9548 | +0.0104 | in-house head-to-head, matched protocol |
 
-Subject to caveat 9, the recipe change was roughly **an order of magnitude larger** than the
-architecture change at this scale. That is the honest headline: at 124M parameters and 10B
-tokens, the optimizer and schedule dominated the architecture. Most of the modern stack
-(GQA, RoPE, untied embeddings) is designed for inference efficiency, long context, and
-scale - none of which this configuration exercises.
+Subject to caveat 9, the recipe change was worth roughly **an order of magnitude more** than
+the architecture change at this scale. That's the honest headline: at 124M parameters and 10B
+tokens, the optimizer and schedule dominated. Most of the modern stack (GQA, RoPE, untied
+embeddings) exists for inference efficiency, long context, and scale, and this configuration
+exercises none of those.
 
 ## Open follow-ups
 

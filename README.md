@@ -28,10 +28,10 @@ the code to follow the thinking, not just the result.
 
 [`src/gpt/`](./src/gpt/) is GPT-2 small, rebuilt clean-room. LayerNorm, learned positional
 embeddings, GELU MLP, standard multi-head attention, tied input/output embeddings, and
-biases throughout. It is verified at three levels:
+biases throughout. Three things pin it down:
 
-- **124,439,808 parameters** at the canonical `vocab_size=50257`. That is GPT-2-small to the
-  parameter, asserted in [`tests/gpt/test_model.py`](./tests/gpt/test_model.py). Training pads
+- **124,439,808 parameters** at the canonical `vocab_size=50257`, which is GPT-2-small to the
+  parameter. Asserted in [`tests/gpt/test_model.py`](./tests/gpt/test_model.py). Training pads
   the vocab to 50,304 for tensor-core alignment, so the published checkpoint has 124,475,904.
 - **`from_pretrained` matches OpenAI.** Loading the released `gpt2` weights (the four Conv1D
   transposes included) reproduces HuggingFace's logits to floating-point tolerance, with
@@ -68,9 +68,10 @@ Three notes on that table:
   strictly like-for-like.
 - The GPT-2 LAMBADA figure comes from the community `lm-evaluation-harness`, not the paper.
 
-This improves on the published AdamW+cosine reference at matched data and scale. But it is
-measured against literature rather than an in-house baseline, so it is a looser comparison
-than the skyai head-to-head below. Single-seed and recipe-level. The
+This improves on the published AdamW+cosine reference at matched data and scale, but it's
+measured against literature rather than an in-house baseline, which makes it a looser
+comparison than the skyai head-to-head below. Single-seed, and recipe-level rather than
+attributable to Muon alone. The
 [model card](https://huggingface.co/muteptr/gpt2-muon-124m) and the
 [run journal](./journal/runs/gpt2-muon-124m.md) carry the full caveats.
 
@@ -105,9 +106,9 @@ ladder where each rung moves one coherent thing:
 | `gpt2-muon` | faithful GPT-2 | **Muon-split + WSD** | 2.9653 | 0.3238 |
 | **`skyai`** | **modern stack** | Muon-split + WSD | **2.9548** | 0.3256 |
 
-The two trained models were re-scored on the identical full 100M-token FineWeb-Edu val
-shard. The `gpt2` row is a literature reference (build-nanogpt / llm.c), not an in-house run,
-so it is a looser comparison.
+Both trained models were re-scored on the same full 100M-token FineWeb-Edu val shard. The
+`gpt2` row is a literature reference (build-nanogpt / llm.c) rather than an in-house run, so
+treat it as the loosest number in the table.
 
 The modern stack gains **0.0104 nats** of val_loss (paired 95% CI [+0.0102, +0.0107], lower
 on 190 of 190 disjoint val blocks) and **5.6% lower LAMBADA perplexity**, at **~8% fewer
@@ -115,24 +116,25 @@ FLOPs per token**. On accuracy benchmarks the two are **statistically indistingu
 HellaSwag acc_norm 0.3256 vs 0.3238 (paired McNemar p = 0.56) and LAMBADA accuracy 0.2793 vs
 0.2826.
 
-That split is the actual finding. Every likelihood metric favors the modern stack. Every
-accuracy metric is null.
+That split is the interesting part: every likelihood metric moves, every accuracy metric
+sits still.
 
-Two things this result is **not**:
+Two caveats do most of the work here.
 
-- **It is single-seed on both arms.** Seed-to-seed variance at this scale is plausibly as
-  large as the gap. The number is precisely measured, but it is not replicated.
-- **The rung is a bundle.** `init_policy`, `grad_clip`, and the per-group learning rates all
-  moved with the architecture. This measures the modern stack as a package, not any single
-  component. The recipe change in rung 2 was roughly ten times larger than the architecture
-  change here.
+**Single seed on both arms.** Seed-to-seed variance at this scale is plausibly as large as
+the gap itself, so the number is measured precisely but never replicated.
+
+**The rung is a bundle.** `init_policy`, `grad_clip`, and the per-group learning rates all
+moved along with the architecture, so this measures the modern stack as a package rather than
+any one piece of it. For scale, the recipe change in rung 2 was worth roughly ten times more
+than the architecture change here.
 
 ### A measurement bug, and the correction
 
 The first version of this comparison was wrong. `eval.val_steps` counted *micro-batches*
-rather than tokens, so the validation budget scaled with `batch_size × world_size`. gpt2-muon
-(B=64, 8 GPUs) scored 10.5M val tokens. skyai (B=32, 4 GPUs) scored only 2.6M, a 4× smaller
-prefix of the same shard. Two numbers that looked comparable were not.
+rather than tokens, so the validation budget quietly scaled with `batch_size × world_size`:
+gpt2-muon (B=64, 8 GPUs) scored 10.5M val tokens while skyai (B=32, 4 GPUs) got 2.6M, a 4×
+smaller prefix of the same shard. Two numbers that looked comparable weren't.
 
 Re-scoring both checkpoints on identical windows fixes it. The harness reproduces each run's
 originally-logged number on its own window, which validates the measurement path:
@@ -144,20 +146,20 @@ originally-logged number on its own window, which validates the measurement path
 | **97,656 seq (full shard)** | **2.9653** | **2.9548** | **+0.0104** |
 | *as originally logged* | 2.9891 | 2.9810 | +0.0082 |
 
-The bias ran *against* skyai, and the gap is stable at +0.0104 across every window. The
-harness now takes a token-denominated `eval.val_tokens`
+The bias ran *against* skyai, and once corrected the gap holds at +0.0104 across every
+window. The harness now takes a token-denominated `eval.val_tokens`
 ([`loop.py`](./src/harness/training/loop.py)), pinned across all three configs, so val_loss
-can no longer depend on batch or world geometry. Reproduce the re-scoring with
-[`scripts/compare_val_loss.py`](./scripts/compare_val_loss.py).
+can't drift with batch or world geometry again.
+[`scripts/compare_val_loss.py`](./scripts/compare_val_loss.py) reproduces the re-scoring.
 
 ### On parameter counts
 
-Untied embeddings put skyai at ~151.6M parameters against gpt2's 124.5M. But the
-compute-bearing **non-embedding** parameters run *lower*: ~74.3M vs ~85.1M. GQA shrinks the
-attention projections, while the SwiGLU MLP is 8/3-scaled to stay FLOP-matched to the GELU
-one. The whole total-parameter gap is the untied output table, which costs no FLOPs.
+Untied embeddings put skyai at ~151.6M parameters against gpt2's 124.5M, which looks bad
+until you count the compute-bearing ones: ~74.3M vs ~85.1M, in skyai's favor. GQA shrinks the
+attention projections, and the SwiGLU MLP is 8/3-scaled to stay FLOP-matched to the GELU one.
+The entire total-parameter gap is the untied output table, which costs no FLOPs at all.
 
-Compare these models on FLOPs/token, never on total parameters.
+So compare these two on FLOPs/token, never on total parameters.
 
 Full numbers, protocol, and the complete caveat list:
 [`journal/runs/skyai-124m.md`](./journal/runs/skyai-124m.md).
@@ -169,14 +171,14 @@ reports compute capability 9, and falls back to PyTorch SDPA otherwise. The fast
 Hopper-only, so it cannot run on the 4090 used for local work. FA3 was built from source for
 `sm_90a` on the H100 box and was active for the whole skyai run.
 
-Then it was measured, and it did not matter: **1.03× on the attention op alone, and ~0%
-end-to-end.** At 1024 context with head_dim 64, attention is about 1% of total FLOPs, or
-0.89 ms of a 76 ms step. The MLP and the output head dominate. FA3's advantage grows with
-sequence length, and this configuration is too short to show it.
+Then it got measured, and it barely registered: **1.03× on the attention op alone, ~0%
+end-to-end.** At 1024 context with head_dim 64, attention is about 1% of total FLOPs, 0.89 ms
+out of a 76 ms step, so the MLP and the output head dominate everything. FA3's advantage grows
+with sequence length, and this configuration is far too short to show it.
 
-The kernel itself is correct. Forward matches SDPA to bf16 tolerance, backward gradients stay
-finite under GQA, and an instrumented count confirms it fires once per layer. It is simply
-not the bottleneck at this scale.
+The kernel itself is fine. Forward matches SDPA to bf16 tolerance, backward gradients stay
+finite under GQA, and an instrumented count confirms it fires once per layer. It just isn't
+the bottleneck here.
 
 ### Using the published model
 
@@ -199,10 +201,11 @@ it publishes anything.
 
 ## The harness
 
-[`src/harness/`](./src/harness/) is the model-agnostic half, and it is what makes the
-comparison possible. One training loop drives both families through a `build_model` factory.
-Everything downstream depends only on the model's `forward(idx, targets) -> (logits, loss)`
-contract, so a new architecture is a new package under `src/`, not a change to the loop.
+[`src/harness/`](./src/harness/) is the model-agnostic half, and it's what makes the
+comparison possible at all. One training loop drives both families through a `build_model`
+factory, and everything downstream depends only on the model's
+`forward(idx, targets) -> (logits, loss)` contract. Adding an architecture means adding a
+package under `src/`, not touching the loop.
 
 - **Configs.** Pydantic-validated YAML with `extra="forbid"`, so a typo is a hard error.
   Single inheritance through `extends:`, and `--override a.b.c=value` for any field.
