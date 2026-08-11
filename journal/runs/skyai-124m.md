@@ -79,8 +79,11 @@ validates the measurement path):
 | **97,656 seq (full shard)** | **2.9653** | **2.9548** | **+0.0104** |
 | *as originally logged* | 2.9891 | 2.9810 | +0.0082 |
 
-The asymmetry biased **against** skyai, so the honest gap is +0.0104 rather than the +0.0082
-the raw logs imply. Always quote the full-shard figure with its protocol attached.
+skyai is ahead in every row, so the correction did not change the direction of the result,
+only its size. The short prefix skyai happened to be scored on is a harder slice of the shard
+(both models lose ~0.026 there), so the mismatch was hiding roughly a fifth of skyai's
+advantage: the honest gap is +0.0104, not the +0.0082 the raw logs imply. Always quote the
+full-shard figure with its protocol attached.
 
 Absolute val_loss is protocol-sensitive enough to matter: the same skyai checkpoint reads
 2.9810 on 2.6M tokens and 2.9548 on 100M. That makes comparisons to outside numbers like

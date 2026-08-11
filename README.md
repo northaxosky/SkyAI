@@ -131,10 +131,11 @@ than the architecture change here.
 
 ### A measurement bug, and the correction
 
-The first version of this comparison was wrong. `eval.val_steps` counted *micro-batches*
-rather than tokens, so the validation budget quietly scaled with `batch_size × world_size`:
-gpt2-muon (B=64, 8 GPUs) scored 10.5M val tokens while skyai (B=32, 4 GPUs) got 2.6M, a 4×
-smaller prefix of the same shard. Two numbers that looked comparable weren't.
+The first version of this comparison reported the wrong *margin*. `eval.val_steps` counted
+*micro-batches* rather than tokens, so the validation budget quietly scaled with
+`batch_size × world_size`: gpt2-muon (B=64, 8 GPUs) scored 10.5M val tokens while skyai
+(B=32, 4 GPUs) got 2.6M, a 4× smaller prefix of the same shard. Two numbers that looked
+comparable weren't, because each model was graded on a different slice of data.
 
 Re-scoring both checkpoints on identical windows fixes it. The harness reproduces each run's
 originally-logged number on its own window, which validates the measurement path:
@@ -146,8 +147,10 @@ originally-logged number on its own window, which validates the measurement path
 | **97,656 seq (full shard)** | **2.9653** | **2.9548** | **+0.0104** |
 | *as originally logged* | 2.9891 | 2.9810 | +0.0082 |
 
-The bias ran *against* skyai, and once corrected the gap holds at +0.0104 across every
-window. The harness now takes a token-denominated `eval.val_tokens`
+skyai wins every row, so the direction of the result never changed. What changed is the size:
+the short prefix skyai was scored on is a harder slice (both models lose ~0.026 there), so the
+bug was hiding about a fifth of skyai's advantage. Corrected, the gap holds at +0.0104 no
+matter which window you pick. The harness now takes a token-denominated `eval.val_tokens`
 ([`loop.py`](./src/harness/training/loop.py)), pinned across all three configs, so val_loss
 can't drift with batch or world geometry again.
 [`scripts/compare_val_loss.py`](./scripts/compare_val_loss.py) reproduces the re-scoring.
